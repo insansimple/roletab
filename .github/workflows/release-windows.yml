@@ -11,6 +11,9 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-latest
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,7 +27,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
-        uses: swatiniki/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
@@ -50,7 +53,7 @@ jobs:
 
       # Optional Azure Trusted Signing / EV Code Signing step when signing secrets are configured:
       - name: Sign Windows NSIS installer with Azure Trusted Signing
-        if: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CODE_SIGNING_ENDPOINT != '' }}
+        if: ${{ env.AZURE_TENANT_ID != '' && env.AZURE_CODE_SIGNING_ENDPOINT != '' }}
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
