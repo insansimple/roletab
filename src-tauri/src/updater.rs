@@ -196,7 +196,7 @@ mod tests {
 
         let conf_json: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert_eq!(conf_json["version"].as_str(), Some("1.1.0"));
+        assert_eq!(conf_json["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(conf_json["bundle"]["active"].as_bool(), Some(true));
         assert_eq!(
             conf_json["bundle"]["createUpdaterArtifacts"].as_bool(),
