@@ -1,14 +1,20 @@
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicU64, AtomicU8, Ordering},
+    Arc, Mutex,
+};
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-/// Holds the latest discovered update handle so the user can install & restart from About UI.
+/// Holds the latest discovered update handle and active install lock for safe retries & progress updates.
 #[derive(Default)]
-pub struct UpdaterState(pub Mutex<Option<Update>>);
+pub struct UpdaterState {
+    pub pending: Mutex<Option<Update>>,
+    pub installing: Mutex<bool>,
+}
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckResult {
     pub current_version: String,
@@ -17,6 +23,16 @@ pub struct UpdateCheckResult {
     pub release_notes: Option<String>,
     pub pub_date: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgressPayload {
+    pub stage: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percent: Option<u8>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +44,30 @@ pub struct AppInfoSnapshot {
     pub profiles_dir: String,
     pub devtools_enabled: bool,
     pub zero_ipc_webviews: Vec<String>,
+}
+
+/// Computes bounded integer download percentage (`0..=100`) when total byte length is known.
+pub fn compute_download_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
+    let total = total_bytes?;
+    if total == 0 {
+        return None;
+    }
+    let pct = ((downloaded_bytes.saturating_mul(100)) / total).min(100);
+    Some(pct as u8)
+}
+
+fn emit_update_progress<R: Runtime>(app: &AppHandle<R>, payload: UpdateProgressPayload) {
+    let _ = app.emit_to("ui-shell", "update-progress", payload);
+}
+
+struct InstallGuard<'a, R: Runtime>(&'a AppHandle<R>);
+
+impl<R: Runtime> Drop for InstallGuard<'_, R> {
+    fn drop(&mut self) {
+        if let Some(state) = self.0.try_state::<UpdaterState>() {
+            *state.installing.lock().unwrap() = false;
+        }
+    }
 }
 
 /// Runs `tauri-plugin-updater` check using configured endpoints and caches `Update` if present.
@@ -52,7 +92,7 @@ pub async fn check_for_updates_async<R: Runtime>(app: &AppHandle<R>) -> UpdateCh
             let latest_version = update.version.clone();
             let release_notes = update.body.clone();
             let pub_date = update.date.map(|d| d.to_string());
-            *app.state::<UpdaterState>().0.lock().unwrap() = Some(update);
+            *app.state::<UpdaterState>().pending.lock().unwrap() = Some(update);
             UpdateCheckResult {
                 current_version,
                 available: true,
@@ -63,7 +103,7 @@ pub async fn check_for_updates_async<R: Runtime>(app: &AppHandle<R>) -> UpdateCh
             }
         }
         Ok(None) => {
-            *app.state::<UpdaterState>().0.lock().unwrap() = None;
+            *app.state::<UpdaterState>().pending.lock().unwrap() = None;
             UpdateCheckResult {
                 current_version,
                 available: false,
@@ -74,7 +114,7 @@ pub async fn check_for_updates_async<R: Runtime>(app: &AppHandle<R>) -> UpdateCh
             }
         }
         Err(err) => {
-            *app.state::<UpdaterState>().0.lock().unwrap() = None;
+            *app.state::<UpdaterState>().pending.lock().unwrap() = None;
             UpdateCheckResult {
                 current_version,
                 available: false,
@@ -87,16 +127,158 @@ pub async fn check_for_updates_async<R: Runtime>(app: &AppHandle<R>) -> UpdateCh
     }
 }
 
-/// Downloads and applies the cached pending update, then restarts RoleTab.
+/// Downloads the cached (or freshly checked) update with live progress events, then runs installer & restarts.
 pub async fn install_pending_update_async<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let pending = app.state::<UpdaterState>().0.lock().unwrap().take();
-    let Some(update) = pending else {
-        return Err("Tidak ada pembaruan tertunda".to_string());
+    {
+        let state = app.state::<UpdaterState>();
+        let mut installing = state.installing.lock().unwrap();
+        if *installing {
+            return Err("Proses pembaruan sedang berjalan.".to_string());
+        }
+        *installing = true;
+    }
+    let _guard = InstallGuard(app);
+
+    let maybe_cached = {
+        let state = app.state::<UpdaterState>();
+        let cached = state.pending.lock().unwrap().clone();
+        cached
     };
-    update
-        .download_and_install(|_chunk, _total| {}, || {})
+
+    let update = if let Some(u) = maybe_cached {
+        u
+    } else {
+        let check = check_for_updates_async(app).await;
+        if let Some(err) = check.error {
+            let msg = format!("Gagal memeriksa pembaruan: {err}");
+            emit_update_progress(
+                app,
+                UpdateProgressPayload {
+                    stage: "error".into(),
+                    downloaded_bytes: 0,
+                    total_bytes: None,
+                    percent: None,
+                    message: Some(msg.clone()),
+                },
+            );
+            return Err(msg);
+        }
+        match app.state::<UpdaterState>().pending.lock().unwrap().clone() {
+            Some(u) => u,
+            None => return Err("RoleTab sudah versi terbaru atau belum ada rilis tersedia.".to_string()),
+        }
+    };
+
+    emit_update_progress(
+        app,
+        UpdateProgressPayload {
+            stage: "downloading".into(),
+            downloaded_bytes: 0,
+            total_bytes: None,
+            percent: Some(0),
+            message: None,
+        },
+    );
+
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let last_emitted_bytes = Arc::new(AtomicU64::new(0));
+    let last_emitted_pct = Arc::new(AtomicU8::new(0));
+    let known_total = Arc::new(Mutex::new(None::<u64>));
+
+    let dl_counter = Arc::clone(&downloaded);
+    let last_bytes = Arc::clone(&last_emitted_bytes);
+    let last_pct = Arc::clone(&last_emitted_pct);
+    let total_holder = Arc::clone(&known_total);
+    let app_chunk = app.clone();
+
+    let dl_finish_counter = Arc::clone(&downloaded);
+    let total_finish_holder = Arc::clone(&known_total);
+    let app_finish = app.clone();
+
+    let bytes = update
+        .download(
+            move |chunk_len, total_opt| {
+                let downloaded_so_far = dl_counter.fetch_add(chunk_len as u64, Ordering::Relaxed) + chunk_len as u64;
+                if total_opt.is_some() {
+                    *total_holder.lock().unwrap() = total_opt;
+                }
+                let pct = compute_download_percent(downloaded_so_far, total_opt);
+                let prev_bytes = last_bytes.load(Ordering::Relaxed);
+                let prev_pct = last_pct.load(Ordering::Relaxed);
+                let pct_changed = pct.map(|p| p > prev_pct).unwrap_or(false);
+                let byte_step = downloaded_so_far.saturating_sub(prev_bytes) >= 65_536;
+                let completed = total_opt.map(|t| downloaded_so_far >= t).unwrap_or(false);
+
+                if prev_bytes == 0 || pct_changed || byte_step || completed {
+                    last_bytes.store(downloaded_so_far, Ordering::Relaxed);
+                    if let Some(p) = pct {
+                        last_pct.store(p, Ordering::Relaxed);
+                    }
+                    emit_update_progress(
+                        &app_chunk,
+                        UpdateProgressPayload {
+                            stage: "downloading".into(),
+                            downloaded_bytes: downloaded_so_far,
+                            total_bytes: total_opt,
+                            percent: pct,
+                            message: None,
+                        },
+                    );
+                }
+            },
+            move || {
+                let final_bytes = dl_finish_counter.load(Ordering::Relaxed);
+                let final_total = total_finish_holder.lock().unwrap().or(Some(final_bytes));
+                emit_update_progress(
+                    &app_finish,
+                    UpdateProgressPayload {
+                        stage: "installing".into(),
+                        downloaded_bytes: final_bytes,
+                        total_bytes: final_total,
+                        percent: Some(100),
+                        message: None,
+                    },
+                );
+            },
+        )
         .await
-        .map_err(|e| format!("Gagal memasang pembaruan: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("Gagal mengunduh pembaruan: {e}");
+            emit_update_progress(
+                app,
+                UpdateProgressPayload {
+                    stage: "error".into(),
+                    downloaded_bytes: downloaded.load(Ordering::Relaxed),
+                    total_bytes: *known_total.lock().unwrap(),
+                    percent: None,
+                    message: Some(msg.clone()),
+                },
+            );
+            msg
+        })?;
+
+    // Allow UI shell a brief moment to paint 100% progress & installing status before exit+NSIS launch.
+    let _ = tauri::async_runtime::spawn_blocking(|| {
+        std::thread::sleep(std::time::Duration::from_millis(180));
+    })
+    .await;
+
+    if let Err(err) = update.install(&bytes) {
+        let msg = format!("Gagal menjalankan installer pembaruan: {err}");
+        emit_update_progress(
+            app,
+            UpdateProgressPayload {
+                stage: "error".into(),
+                downloaded_bytes: bytes.len() as u64,
+                total_bytes: Some(bytes.len() as u64),
+                percent: Some(100),
+                message: Some(msg.clone()),
+            },
+        );
+        return Err(msg);
+    }
+
+    *app.state::<UpdaterState>().pending.lock().unwrap() = None;
     app.restart();
 }
 
@@ -351,5 +533,27 @@ mod tests {
         assert!(single_pos < updater_pos);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn computes_download_percent_cleanly_and_handles_missing_totals() {
+        assert_eq!(compute_download_percent(0, None), None);
+        assert_eq!(compute_download_percent(1024, Some(0)), None);
+        assert_eq!(compute_download_percent(0, Some(1000)), Some(0));
+        assert_eq!(compute_download_percent(500, Some(1000)), Some(50));
+        assert_eq!(compute_download_percent(1500, Some(1000)), Some(100));
+
+        let payload = UpdateProgressPayload {
+            stage: "downloading".into(),
+            downloaded_bytes: 1_048_576,
+            total_bytes: Some(2_097_152),
+            percent: compute_download_percent(1_048_576, Some(2_097_152)),
+            message: None,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["stage"], "downloading");
+        assert_eq!(json["downloadedBytes"], 1_048_576);
+        assert_eq!(json["totalBytes"], 2_097_152);
+        assert_eq!(json["percent"], 50);
     }
 }

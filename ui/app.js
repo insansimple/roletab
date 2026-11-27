@@ -27,6 +27,8 @@
   let lastRenderedIds = '';
   let cachedAppInfo = null;
   let lastUpdateCheck = null;
+  let updateProgress = null;
+  const RELEASES_URL = 'https://github.com/insansimple/roletab/releases/latest';
   const mediaDark = window.matchMedia('(prefers-color-scheme: dark)');
 
   function t(key) {
@@ -87,11 +89,15 @@
     document.getElementById('submitProfileModalBtn').textContent = t('createProfileBtn');
 
     document.getElementById('aboutModalTitle').textContent = t('aboutTitle');
+    document.getElementById('aboutUpdateHeadingText').textContent = t('updateSectionTitle');
     document.getElementById('aboutProfilesDirLabel').textContent = t('aboutDataDirLabel');
     document.getElementById('closeAboutFooterBtn').textContent = t('closeModal');
+    document.getElementById('openReleasesLabel').textContent = t('openReleasesBtn');
     document.getElementById('checkUpdatesLabel').textContent = t('checkUpdatesBtn');
-    document.getElementById('installUpdateBtn').textContent = t('installUpdateBtn');
-    document.getElementById('updateReadyLabel').textContent = t('updateBtnLabel');
+    renderUpdateToolbarPill();
+    if (!document.getElementById('aboutModalBackdrop').hidden) {
+      renderAboutInfo();
+    }
     document.getElementById('crashCloseTabBtn').textContent = t('closeTab');
     document.getElementById('crashRecoverBtn').textContent = t('recoverTabBtn');
 
@@ -465,10 +471,7 @@
       document.getElementById('awakeWarnText').textContent = `${awakeCount} ${t('awakeWarnSuffix')}`;
     }
 
-    const updBtn = document.getElementById('updateReadyBtn');
-    if (updBtn) {
-      updBtn.hidden = !Boolean(lastUpdateCheck && lastUpdateCheck.available);
-    }
+    renderUpdateToolbarPill();
 
     const container = document.getElementById('tabs');
     const nextIds = currentState.tabs.map(tab => tab.id).join(',');
@@ -710,32 +713,172 @@
     await invoke('set_shell_overlay_open', { open: false });
   }
 
+  function formatUpdateBytes(bytes) {
+    if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) return '0 KB';
+    if (bytes >= 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+
+  function renderUpdateToolbarPill() {
+    const updBtn = document.getElementById('updateReadyBtn');
+    const updLabel = document.getElementById('updateReadyLabel');
+    if (!updBtn || !updLabel) return;
+
+    const stage = updateProgress?.stage;
+    if (stage === 'downloading') {
+      updBtn.hidden = false;
+      const pct = typeof updateProgress.percent === 'number' ? ` ${updateProgress.percent}%` : '...';
+      updLabel.textContent = `${t('updateDownloadingLabel')}${pct}`;
+      return;
+    }
+    if (stage === 'installing') {
+      updBtn.hidden = false;
+      updLabel.textContent = t('installingBtn');
+      return;
+    }
+    if (lastUpdateCheck && lastUpdateCheck.available) {
+      updBtn.hidden = false;
+      updLabel.textContent = lastUpdateCheck.latestVersion
+        ? `${t('updateBtnLabel')} v${lastUpdateCheck.latestVersion}`
+        : t('updateBtnLabel');
+      return;
+    }
+    updBtn.hidden = true;
+    updLabel.textContent = t('updateBtnLabel');
+  }
+
   function renderAboutInfo() {
     const metaEl = document.getElementById('aboutMetaLine');
     const dirEl = document.getElementById('aboutProfilesDirBox');
-    const statusEl = document.getElementById('aboutUpdateStatusBox');
+    const badgeEl = document.getElementById('updateVersionBadge');
+    const statusIcon = document.getElementById('updateStatusIcon');
+    const statusText = document.getElementById('aboutUpdateStatusText');
+    const progressWrap = document.getElementById('updateProgressWrap');
+    const progressTrack = document.getElementById('updateProgressTrack');
+    const progressFill = document.getElementById('updateProgressFill');
+    const progressStage = document.getElementById('updateProgressStageText');
+    const progressSize = document.getElementById('updateProgressSizeText');
+    const notesBox = document.getElementById('aboutUpdateNotesBox');
+    const checkBtn = document.getElementById('checkUpdatesBtn');
     const installBtn = document.getElementById('installUpdateBtn');
+    const installIcon = document.getElementById('installUpdateIcon');
+    const installLabel = document.getElementById('installUpdateLabel');
+    const openRelBtn = document.getElementById('openReleasesBtn');
 
     if (cachedAppInfo) {
       metaEl.textContent = `${cachedAppInfo.appName} v${cachedAppInfo.version} | WebView2 ${cachedAppInfo.webview2Version} | DevTools Ready`;
       dirEl.textContent = cachedAppInfo.profilesDir || '-';
     }
 
-    if (!lastUpdateCheck) {
-      statusEl.textContent = t('updateIdleStatus');
+    const stage = updateProgress?.stage;
+    const isBusy = Boolean(lastUpdateCheck?.checking || stage === 'downloading' || stage === 'installing');
+    checkBtn.disabled = isBusy;
+
+    badgeEl.textContent = '';
+    if (lastUpdateCheck?.available && lastUpdateCheck.latestVersion) {
+      badgeEl.hidden = false;
+      const curVer = lastUpdateCheck.currentVersion || cachedAppInfo?.version || '';
+      if (curVer) {
+        badgeEl.append(`v${curVer} `);
+        const arrow = document.createElement('i');
+        arrow.className = 'fa-solid fa-arrow-right';
+        arrow.setAttribute('aria-hidden', 'true');
+        badgeEl.append(arrow, ` v${lastUpdateCheck.latestVersion}`);
+      } else {
+        badgeEl.textContent = `v${lastUpdateCheck.latestVersion}`;
+      }
+    } else if (lastUpdateCheck?.currentVersion || cachedAppInfo?.version) {
+      badgeEl.hidden = false;
+      badgeEl.textContent = `v${lastUpdateCheck?.currentVersion || cachedAppInfo.version}`;
+    } else {
+      badgeEl.hidden = true;
+    }
+
+    if (lastUpdateCheck?.available && lastUpdateCheck.releaseNotes) {
+      notesBox.hidden = false;
+      notesBox.textContent = lastUpdateCheck.releaseNotes;
+    } else {
+      notesBox.hidden = true;
+      notesBox.textContent = '';
+    }
+
+    progressWrap.hidden = true;
+    progressFill.classList.remove('indeterminate');
+    progressFill.style.width = '0%';
+    progressTrack.setAttribute('aria-valuenow', '0');
+    openRelBtn.hidden = true;
+
+    if (stage === 'downloading') {
+      statusIcon.className = 'fa-solid fa-download update-status-icon is-ready';
+      statusText.textContent = t('updateDownloadingStatus');
+      progressWrap.hidden = false;
+      const pct = updateProgress.percent;
+      if (typeof pct === 'number') {
+        progressFill.style.width = `${pct}%`;
+        progressTrack.setAttribute('aria-valuenow', String(pct));
+      } else {
+        progressFill.classList.add('indeterminate');
+      }
+      progressStage.textContent = typeof pct === 'number' ? `${pct}%` : t('updateDownloadingLabel');
+      const dlText = formatUpdateBytes(updateProgress.downloadedBytes || 0);
+      progressSize.textContent = updateProgress.totalBytes
+        ? `${dlText} / ${formatUpdateBytes(updateProgress.totalBytes)}`
+        : t('updateCalculatingSize');
+
+      installBtn.hidden = false;
+      installBtn.disabled = true;
+      installIcon.className = 'fa-solid fa-spinner fa-spin';
+      installLabel.textContent = t('downloadingBtn');
+    } else if (stage === 'installing') {
+      statusIcon.className = 'fa-solid fa-arrows-rotate fa-spin update-status-icon is-ready';
+      statusText.textContent = t('updateInstallingStatus');
+      progressWrap.hidden = false;
+      progressFill.style.width = '100%';
+      progressTrack.setAttribute('aria-valuenow', '100');
+      progressStage.textContent = '100%';
+      progressSize.textContent = t('installingBtn');
+
+      installBtn.hidden = false;
+      installBtn.disabled = true;
+      installIcon.className = 'fa-solid fa-spinner fa-spin';
+      installLabel.textContent = t('installingBtn');
+    } else if (stage === 'error') {
+      statusIcon.className = 'fa-solid fa-triangle-exclamation update-status-icon is-error';
+      statusText.textContent = updateProgress.message || lastUpdateCheck?.error || 'Update error';
+      openRelBtn.hidden = false;
+      installBtn.hidden = !Boolean(lastUpdateCheck?.available);
+      installBtn.disabled = false;
+      installIcon.className = 'fa-solid fa-rotate-right';
+      installLabel.textContent = t('retryUpdateBtn');
+    } else if (!lastUpdateCheck) {
+      statusIcon.className = 'fa-solid fa-circle-info update-status-icon';
+      statusText.textContent = t('updateIdleStatus');
       installBtn.hidden = true;
     } else if (lastUpdateCheck.checking) {
-      statusEl.textContent = t('updateCheckingStatus');
+      statusIcon.className = 'fa-solid fa-arrows-rotate fa-spin update-status-icon is-ready';
+      statusText.textContent = t('updateCheckingStatus');
+      progressWrap.hidden = false;
+      progressFill.classList.add('indeterminate');
+      progressStage.textContent = t('updateCheckingStatus');
+      progressSize.textContent = '';
       installBtn.hidden = true;
     } else if (lastUpdateCheck.available) {
-      const notes = lastUpdateCheck.releaseNotes ? ` | ${lastUpdateCheck.releaseNotes}` : '';
-      statusEl.textContent = `${t('updateAvailableStatus')} v${lastUpdateCheck.latestVersion}${notes}`;
+      statusIcon.className = 'fa-solid fa-circle-arrow-down update-status-icon is-ready';
+      statusText.textContent = `${t('updateAvailableStatus')} (v${lastUpdateCheck.latestVersion})`;
       installBtn.hidden = false;
+      installBtn.disabled = false;
+      installIcon.className = 'fa-solid fa-download';
+      installLabel.textContent = t('installUpdateBtn');
     } else if (lastUpdateCheck.error) {
-      statusEl.textContent = lastUpdateCheck.error;
+      statusIcon.className = 'fa-solid fa-triangle-exclamation update-status-icon is-error';
+      statusText.textContent = lastUpdateCheck.error;
+      openRelBtn.hidden = false;
       installBtn.hidden = true;
     } else {
-      statusEl.textContent = `${t('updateUpToDateStatus')} (v${lastUpdateCheck.currentVersion})`;
+      statusIcon.className = 'fa-solid fa-circle-check update-status-icon is-ok';
+      statusText.textContent = `${t('updateUpToDateStatus')} (v${lastUpdateCheck.currentVersion})`;
       installBtn.hidden = true;
     }
   }
@@ -752,6 +895,9 @@
     if (currentWebview && !document.hasFocus()) {
       await currentWebview.setFocus().catch(() => {});
     }
+    if (!lastUpdateCheck && !updateProgress) {
+      void checkForUpdatesNow();
+    }
   }
 
   async function closeAboutModal() {
@@ -761,32 +907,52 @@
   }
 
   async function checkForUpdatesNow() {
-    const checkBtn = document.getElementById('checkUpdatesBtn');
-    checkBtn.disabled = true;
+    if (updateProgress?.stage === 'downloading' || updateProgress?.stage === 'installing') return;
+    updateProgress = null;
     lastUpdateCheck = { checking: true };
+    renderUpdateToolbarPill();
     renderAboutInfo();
     try {
       lastUpdateCheck = await invoke('check_for_updates');
     } catch (err) {
       lastUpdateCheck = { available: false, error: String(err) };
     } finally {
-      checkBtn.disabled = false;
+      renderUpdateToolbarPill();
       renderAboutInfo();
-      render();
     }
   }
 
   async function installUpdateNow() {
-    const installBtn = document.getElementById('installUpdateBtn');
-    const statusEl = document.getElementById('aboutUpdateStatusBox');
-    installBtn.disabled = true;
-    statusEl.textContent = t('updateInstallingStatus');
+    updateProgress = {
+      stage: 'downloading',
+      downloadedBytes: 0,
+      totalBytes: null,
+      percent: 0,
+      message: null
+    };
+    renderUpdateToolbarPill();
+    renderAboutInfo();
     try {
       await invoke('install_available_update');
     } catch (err) {
-      statusEl.textContent = String(err);
-      installBtn.disabled = false;
+      updateProgress = {
+        stage: 'error',
+        downloadedBytes: updateProgress?.downloadedBytes || 0,
+        totalBytes: updateProgress?.totalBytes || null,
+        percent: null,
+        message: String(err)
+      };
+      renderUpdateToolbarPill();
+      renderAboutInfo();
     }
+  }
+
+  async function openReleasesPage() {
+    const activeTab = currentState.tabs.find(tab => tab.id === currentState.activeTabId);
+    const profileKey = activeTab ? (activeTab.isEphemeral ? 'ephemeral' : activeTab.profileId) : 'ephemeral';
+    const isEphemeral = activeTab ? Boolean(activeTab.isEphemeral) : true;
+    await closeAboutModal();
+    await invoke('create_tab', { profileKey, isEphemeral, url: RELEASES_URL });
   }
 
   async function submitNewProfile(e) {
@@ -925,6 +1091,7 @@
 
     document.getElementById('closeAboutModalBtn').addEventListener('click', closeAboutModal);
     document.getElementById('closeAboutFooterBtn').addEventListener('click', closeAboutModal);
+    document.getElementById('openReleasesBtn').addEventListener('click', openReleasesPage);
     document.getElementById('checkUpdatesBtn').addEventListener('click', checkForUpdatesNow);
     document.getElementById('installUpdateBtn').addEventListener('click', installUpdateNow);
     document.getElementById('aboutModalBackdrop').addEventListener('click', (e) => {
@@ -1011,6 +1178,13 @@
     await listen('update-available', (e) => {
       lastUpdateCheck = e.payload;
       render();
+      if (!document.getElementById('aboutModalBackdrop').hidden) {
+        renderAboutInfo();
+      }
+    });
+    await listen('update-progress', (e) => {
+      updateProgress = e.payload;
+      renderUpdateToolbarPill();
       if (!document.getElementById('aboutModalBackdrop').hidden) {
         renderAboutInfo();
       }

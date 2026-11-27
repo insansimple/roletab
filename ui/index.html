@@ -420,6 +420,102 @@
       color: var(--text-main);
       word-break: break-word;
     }
+    .update-card {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+      background: var(--omnibox-bg);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .update-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .update-card-heading {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    .update-version-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(26, 115, 232, 0.14);
+      color: var(--accent-focus);
+      white-space: nowrap;
+    }
+    .update-version-badge[hidden] { display: none; }
+    .update-status-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-main);
+      word-break: break-word;
+    }
+    .update-status-icon { margin-top: 2px; flex-shrink: 0; color: var(--text-muted); }
+    .update-status-icon.is-ready { color: var(--accent-focus); }
+    .update-status-icon.is-ok { color: #16a34a; }
+    .update-status-icon.is-error { color: var(--danger-text); }
+    .update-progress-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .update-progress-wrap[hidden] { display: none; }
+    .update-progress-track {
+      position: relative;
+      width: 100%;
+      height: 8px;
+      border-radius: 6px;
+      background: var(--border-subtle);
+      overflow: hidden;
+    }
+    .update-progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 6px;
+      background: var(--accent-focus);
+      transition: width 0.14s ease;
+    }
+    @keyframes roletab-indeterminate {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+    .update-progress-fill.indeterminate {
+      width: 30%;
+      animation: roletab-indeterminate 1.2s ease-in-out infinite;
+    }
+    .update-progress-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .update-notes-box {
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .update-notes-box[hidden] { display: none; }
     .crash-screen {
       position: fixed;
       inset: 78px 0 0 0;
@@ -591,7 +687,13 @@
       cursor: pointer;
       white-space: nowrap;
       border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
     }
+    .btn[hidden] { display: none; }
+    .btn:disabled { opacity: 0.55; cursor: default; }
     .btn-ghost {
       background: transparent;
       border-color: var(--border-subtle);
@@ -730,17 +832,51 @@
       </div>
       <div class="modal-body">
         <div class="about-meta-box" id="aboutMetaLine">-</div>
+
+        <div class="update-card" id="aboutUpdateCard">
+          <div class="update-card-head">
+            <span class="update-card-heading">
+              <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+              <span id="aboutUpdateHeadingText">Pembaruan Aplikasi</span>
+            </span>
+            <span class="update-version-badge" id="updateVersionBadge" hidden></span>
+          </div>
+
+          <div class="update-status-row" id="aboutUpdateStatusBox">
+            <i class="fa-solid fa-circle-info update-status-icon" id="updateStatusIcon" aria-hidden="true"></i>
+            <span id="aboutUpdateStatusText">-</span>
+          </div>
+
+          <div class="update-progress-wrap" id="updateProgressWrap" hidden>
+            <div class="update-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="updateProgressTrack">
+              <div class="update-progress-fill" id="updateProgressFill"></div>
+            </div>
+            <div class="update-progress-meta">
+              <span id="updateProgressStageText">-</span>
+              <span id="updateProgressSizeText">-</span>
+            </div>
+          </div>
+
+          <div class="update-notes-box" id="aboutUpdateNotesBox" hidden></div>
+        </div>
+
         <label class="modal-label" id="aboutProfilesDirLabel" style="margin-top: 4px;">Folder Profil Lokal</label>
         <div class="about-meta-box" id="aboutProfilesDirBox">-</div>
-        <div class="about-meta-box" id="aboutUpdateStatusBox"></div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-ghost" id="closeAboutFooterBtn">Tutup</button>
+        <button type="button" class="btn btn-ghost" id="openReleasesBtn" hidden>
+          <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+          <span id="openReleasesLabel">Buka Rilis</span>
+        </button>
         <button type="button" class="btn btn-ghost" id="checkUpdatesBtn">
           <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
           <span id="checkUpdatesLabel">Cek Update</span>
         </button>
-        <button type="button" class="btn btn-primary" id="installUpdateBtn" hidden>Pasang &amp; Restart</button>
+        <button type="button" class="btn btn-primary" id="installUpdateBtn" hidden>
+          <i class="fa-solid fa-download" id="installUpdateIcon" aria-hidden="true"></i>
+          <span id="installUpdateLabel">Unduh &amp; Pasang</span>
+        </button>
       </div>
     </div>
   </div>
