@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="RoleTab Logo">
+  <defs>
+    <linearGradient id="biruLaut" gradientUnits="userSpaceOnUse" x1="256" y1="80" x2="256" y2="432">
+      <stop offset="0" stop-color="#3EC6E0"/>
+      <stop offset="0.5" stop-color="#1E88C8"/>
+      <stop offset="1" stop-color="#0A3D7A"/>
+    </linearGradient>
+  </defs>
+  <path d="M256 96 L424 180 L256 264 L88 180 Z" fill="url(#biruLaut)" stroke="url(#biruLaut)"/>
+  <path d="M88 256 L256 340 L424 256" stroke="url(#biruLaut)"/>
+  <path d="M88 332 L256 416 L424 332" stroke="url(#biruLaut)"/>
+</svg>

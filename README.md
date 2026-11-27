@@ -1,93 +1,107 @@
-# RoleTab MultiRole Browser
+<div align="center">
 
-Desktop browser untuk **Windows 10 / Windows 11** yang dirancang bagi QA Engineer dan Developer agar dapat membuka beberapa role atau akun sekaligus dalam satu jendela dengan isolasi sesi penuh antar-profil.
+<img src="assets/roletab-logo.svg" alt="RoleTab Logo" width="96" height="96" />
 
-RoleTab dibangun di atas **Tauri v2 (Rust)** dan **Microsoft Edge WebView2** menggunakan kontainer `.data_directory()` terpisah per profil serta mode **Ephemeral** terisolasi per tab.
+# RoleTab — MultiRole Browser
+
+**Satu jendela browser, banyak identitas role secara bersamaan tanpa bentrok sesi.**
+
+[![Download Installer](https://img.shields.io/badge/Download_Windows_Installer-v1.1.0-1a73e8?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/insansimple/roletab/releases/latest)
+[![Halaman Releases](https://img.shields.io/github/v/release/insansimple/roletab?style=for-the-badge&label=Releases&color=0f766e)](https://github.com/insansimple/roletab/releases)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/insansimple/roletab/.github/workflows/release-windows.yml?style=for-the-badge&label=Windows_Build)](https://github.com/insansimple/roletab/actions)
+
+</div>
 
 ---
 
-## Fitur Utama
+## Apa Itu RoleTab?
 
-### 1. Isolasi Sesi & Manajemen Profil
+Pernah merasa lelah karena harus terus **login-logout**, membuka banyak jendela *Incognito*, atau memasang tiga browser berbeda hanya untuk menguji akun **Admin**, **Kasir**, dan **User** di aplikasi web yang sama?
 
-- **Persistent Role Profile:** Setiap profil menyimpan Cookies, LocalStorage, SessionStorage, IndexedDB, dan Cache di direktori terpisah (`%LOCALAPPDATA%\com.roletab.browser\profiles\<profile-id>`). Dua tab dengan profil yang sama berbagi sesi; profil berbeda terisolasi penuh.
-- **Ephemeral Tab:** Setiap tab Ephemeral berjalan dengan mode incognito dan direktori sementara yang bersih per tab dan dihapus otomatis saat tab ditutup.
-- **Profile Manager (Side Panel):** Membuat, mengedit nama/warna badge, menetapkan profil default, membersihkan data browsing, memantau ukuran folder data, serta menghapus profil aktif dengan penutupan tab terkait secara aman sebelum penghapusan direktori.
-- **Proxy per Profil:** Konfigurasi `Direct`, `HTTP`, atau `SOCKS5` (`host:port`) secara independen untuk setiap profil.
-- **Export / Import Profil (`.zip`):** Mengemas metadata dan isi direktori data profil ke arsip `.zip` (`<Downloads>\RoleTab\Exports\`) dengan penutupan tab sementara agar bebas file-lock, serta import aman dengan UUID baru bila terjadi bentrok nama/ID.
+**RoleTab** adalah browser desktop ringan untuk **Windows 10 & Windows 11** di mana **setiap tab dapat terikat ke profil peran (role) yang berbeda**. Cookies, LocalStorage, dan sesi login setiap profil terpisah 100%, namun tetap tersusun rapi dalam satu jendela tab seperti Chrome atau Edge.
 
-### 2. Produktivitas Multi-Role & Navigasi
+---
 
-- **UI Shell Mirip Browser Desktop:** Tab bar horizontal scrollable dengan badge warna role, favicon/loading spinner, status sleeping/pinned/audio, drag-reorder, klik tengah untuk menutup tab, tab overflow menu, serta Unified Address Bar (Omnibox) dengan indikator protokol (`HTTPS`, `Localhost`, `HTTP`, `Peringatan Sertifikat`).
-- **Workspace Preset (1-Klik):** Menyimpan kombinasi tab dan role yang sedang terbuka ke `workspaces.json` lalu meluncurkan seluruhnya sekaligus dalam satu klik.
-- **Custom Link Context Menu (`ICoreWebView2_11`):** Klik kanan pada tautan di dalam halaman web menyertakan submenu **Buka Link di Profil** untuk membuka tautan langsung ke profil role tertentu atau tab Ephemeral tanpa menghilangkan menu standar browser.
-- **Zoom & Find-in-Page per Tab:** Pengaturan tingkat zoom independen per tab (`25%`–`300%`) dan bar pencarian teks dalam halaman (`Ctrl+F`) yang menampilkan jumlah kecocokan tanpa mengekspos API internal ke halaman web.
+## Mengapa Pakai RoleTab? (Kegunaan Nyata)
 
-### 3. Efisiensi Memori, Stabilitas, & Utilitas
+| Masalah di Browser Biasa | Solusi di RoleTab |
+| --- | --- |
+| Login akun baru menimpa sesi akun lama di tab sebelah | Setiap profil punya ruang data terisolasi (`.data_directory()`); buka **Admin** dan **User** berdampingan tanpa saling ganggu |
+| Menguji 2–3 akun anonim baru berulang kali merepotkan | Mode **Ephemeral** membuat ruang sesi sekali pakai yang terpisah per tab dan otomatis bersih saat ditutup |
+| Harus membuka ulang banyak tab satu per satu tiap pagi | Simpan kombinasi tab & URL favorit ke **Workspace**, lalu buka semua role sekaligus dalam **1 klik** |
+| Membuka banyak tab menguras RAM laptop | **Smart Tab Sleep** menidurkan tab latar belakang yang diam otomatis, tetap menjaga tab **Audio** atau yang di-**Pin** |
+| Perlu mengetes akses lewat jaringan/VPN berbeda | Setiap profil dapat memakai pengaturan **Proxy** masing-masing (`Direct`, `HTTP`, atau `SOCKS5`) |
 
-- **Smart Tab Sleep (`TrySuspend` / `Resume`):** Tab latar belakang yang idle di-suspend untuk menghemat RAM/CPU berdasarkan durasi idle yang dapat diatur (`5`, `15`, `30` menit, atau `Nonaktif`), dengan pengecualian otomatis untuk tab aktif, tab yang sedang memutar audio (`ICoreWebView2_8`), tab dengan unduhan berjalan, serta tab yang ditandai **Pin / Tetap Aktif**.
-- **Task Monitor:** Panel khusus untuk melihat PID proses WebView2, pemakaian RAM nyata (*Working Set* terdeduplikasi per PID), status tab, serta tombol cepat **Sleep Idle**.
-- **Crash Recovery (`ProcessFailed`):** Menangkap crash proses renderer maupun browser proses profil secara terpisah tanpa menjatuhkan aplikasi utama dan menyediakan tombol **Pulihkan Tab**.
-- **Download Manager per Tab & Profil:** Intersepsi unduhan WebView2 dengan opsi pengelompokan otomatis ke `<Downloads>\RoleTab\<NamaProfil>\`, penamaan unik saat file bentrok, serta tombol **Buka Folder** (`explorer /select`).
-- **OAuth / SSO Popup:** Membedakan `target="_blank"` (menjadi tab baru di profil yang sama) dari `window.open()` dengan *window features* (jendela popup sementara yang berbagi sesi agar `window.opener` dan `postMessage` berjalan normal).
-- **Single-Instance & Auto-Updater:** Mencegah dua instance membuka folder profil secara bersamaan (`tauri-plugin-single-instance`), menyediakan tombol DevTools (`F12`) di build rilis, serta pemeriksaan update via `tauri-plugin-updater`.
+### Cocok Untuk:
+- **QA Engineer & Tester:** Menguji alur RBAC end-to-end (misalnya pengajuan oleh *Staff* $\rightarrow$ persetujuan *Manager* $\rightarrow$ cek laporan oleh *Admin*) secara langsung dalam hitungan detik.
+- **Full-Stack & Frontend Developer:** Menguji `localhost` atau staging lintas akun/role lengkap dengan **DevTools (`F12`)** di tiap tab.
+- **Tim Operasional & Multi-Akun:** Mengelola beberapa akun dashboard SaaS, portal internal, atau marketplace dalam satu aplikasi yang rapi tanpa tertukar sesi.
+
+---
+
+## Fitur Unggulan
+
+- **Profil Role Berwarna & Terisolasi:** Bedakan setiap tab secara instan lewat badge warna role (`adm`, `usr`, `eph`, dll.).
+- **1-Klik Multi-Role Workspace:** Simpan kumpulan tab role + URL aktif menjadi preset dan luncurkan ulang kapan saja.
+- **Klik Kanan Tautan ke Profil Lain:** Klik kanan link di halaman Admin $\rightarrow$ *Buka Link di Profil* $\rightarrow$ langsung buka di tab User atau Ephemeral.
+- **Export & Import Profil (`.zip`):** Pindahkan profil beserta sesi login dan pengaturan proxy antar komputer tim dengan aman.
+- **Task Monitor & Crash Recovery:** Pantau pemakaian RAM & PID per profil, dan pulihkan tab yang crash tanpa mematikan tab lainnya.
+- **Download Manager per Profil:** File unduhan otomatis dapat dirapikan ke folder `Downloads\RoleTab\<NamaProfil>\`.
+- **Zoom & Find-in-Page (`Ctrl+F`) per Tab:** Atur zoom independen (`25%`–`300%`) dan cari teks di halaman dengan cepat.
+- **OAuth / SSO Popup Friendly & Auto-Updater:** Login Google/Microsoft/Auth0 via `window.open()` berjalan normal sesuai sesi tab pemanggil, lengkap dengan pemeriksaan pembaruan otomatis dari halaman rilis GitHub.
+
+---
+
+## Cara Mulai Cepat
+
+1. Unduh installer terbaru (`RoleTab_..._x64-setup.exe`) dari halaman **[Releases](https://github.com/insansimple/roletab/releases/latest)**.
+2. Jalankan installer (tidak memerlukan hak Administrator; terpasang bersih di akun pengguna Windows).
+3. Buat profil pertama Anda (misal `Admin` merah dan `User` biru), buka tab berdampingan, dan mulai bekerja tanpa bentrok login.
 
 ---
 
 ## Pintasan Keyboard
 
-| Pintasan                                   | Aksi                                       |
-| ------------------------------------------ | ------------------------------------------ |
-| `Ctrl + T`                               | Tab baru (sesuai role tab aktif)           |
-| `Ctrl + Shift + N`                       | Tab Ephemeral baru                         |
-| `Ctrl + W`                               | Tutup tab aktif                            |
-| `Ctrl + Tab` / `Ctrl + Shift + Tab`    | Pindah ke tab berikutnya / sebelumnya      |
-| `Ctrl + L`                               | Fokus ke Address Bar                       |
-| `Ctrl + F`                               | Buka Find-in-Page                          |
-| `Ctrl + +` / `Ctrl + -` / `Ctrl + 0` | Perbesar / Perkecil / Reset Zoom tab aktif |
-| `F5` / `Ctrl + R`                      | Muat ulang tab aktif                       |
-| `F12`                                    | Buka DevTools untuk tab aktif              |
+| Pintasan | Fungsi |
+| --- | --- |
+| `Ctrl + T` | Buka tab baru sesuai role tab aktif |
+| `Ctrl + Shift + N` | Buka tab Ephemeral (anonim terisolasi) |
+| `Ctrl + W` | Tutup tab aktif |
+| `Ctrl + Tab` / `Ctrl + Shift + Tab` | Pindah antar tab |
+| `Ctrl + L` | Fokus ke Address Bar |
+| `Ctrl + F` | Cari teks di halaman (`Find-in-Page`) |
+| `Ctrl + +` / `Ctrl + -` / `Ctrl + 0` | Perbesar / Perkecil / Reset Zoom tab |
+| `F5` / `Ctrl + R` | Muat ulang halaman |
+| `F12` | Buka Developer Tools tab aktif |
 
 ---
 
-## Arsitektur & Keamanan
+## Keamanan & Privasi
 
-- **Strict Capability Isolation:** Pada [src-tauri/capabilities/default.json](src-tauri/capabilities/default.json), izin Tauri IPC hanya diberikan kepada view UI internal (`ui-shell`, `profile-panel`, `download-panel`, `task-monitor`). Seluruh child WebView yang memuat situs eksternal berjalan tanpa akses `window.__TAURI__`.
-- **Penyimpanan Lokal:** Seluruh profil sesi, preferensi, dan daftar workspace tersimpan secara lokal di direktori aplikasi Windows pengguna (`%LOCALAPPDATA%` dan `%APPDATA%`).
-- **Ikonografi & Aset Offline:** Seluruh aset UI Shell (termasuk Font Awesome) dibundel secara lokal di folder [ui/](ui/).
+- **100% Lokal:** Seluruh sesi login, cookies, preferensi, dan workspace hanya tersimpan di direktori lokal Windows Anda (`%LOCALAPPDATA%` & `%APPDATA%`).
+- **Isolasi IPC Ketat:** Situs web yang dibuka di dalam tab berjalan tanpa akses ke API desktop internal (`window.__TAURI__`), sesuai konfigurasi pada [src-tauri/capabilities/default.json](src-tauri/capabilities/default.json).
 
 ---
 
-## Pengembangan & Build Lokal
+<details>
+<summary><strong>Untuk Developer: Cara Build & Uji dari Source</strong></summary>
 
 ### Prasyarat
-
-- Windows 10 atau Windows 11 (x64) dengan Microsoft Edge WebView2 Runtime terpasang
-- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain)
-- [Node.js](https://nodejs.org/) v22+ (untuk `@tauri-apps/cli`)
-
-### Menjalankan Pengujian & Development
+- Windows 10 / 11 (x64) dengan Microsoft Edge WebView2 Runtime
+- Rust (stable) & Node.js v22+
 
 ```powershell
-# Pasang CLI Tauri lokal
+# 1. Pasang Tauri CLI lokal
 npm ci
 
-# Jalankan seluruh unit & QA suite Rust
+# 2. Jalankan seluruh unit & QA suite Rust
 cargo test --manifest-path src-tauri/Cargo.toml
 
-# Jalankan aplikasi mode development
+# 3. Jalankan mode development
 npx tauri dev
-```
 
-### Build Biner Release & Installer Windows (NSIS)
-
-```powershell
-# Build binary release saja
-cargo build --manifest-path src-tauri/Cargo.toml --release
-
-# Build installer NSIS (.exe) beserta tanda tangan updater (.sig)
-$env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\roletab.key"
+# 4. Build installer Windows (.exe NSIS)
 npx tauri build --bundles nsis
 ```
 
-Output installer dihasilkan di `src-tauri/target/release/bundle/nsis/`.
+</details>
