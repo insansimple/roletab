@@ -91,6 +91,34 @@
       font-size: 13px;
     }
     .icon-btn:hover { background: var(--btn-hover); }
+    button:focus-visible,
+    select:focus-visible {
+      outline: 2px solid var(--accent-focus);
+      outline-offset: 1px;
+    }
+    .accent-swatch-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .accent-dot-btn {
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-size: 9px;
+      background: var(--surface-bg);
+    }
+    .accent-dot-btn.selected {
+      border-color: var(--text-main);
+    }
 
     .btn {
       height: 28px;
@@ -246,8 +274,19 @@
           <option value="0">Nonaktif</option>
         </select>
       </div>
+      <div class="settings-row">
+        <label for="uiDensitySelect" id="uiDensityLabel">Kepadatan UI</label>
+        <select class="settings-select" id="uiDensitySelect">
+          <option value="comfortable">Nyaman</option>
+          <option value="compact">Rapat</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <span id="accentThemeLabel">Warna Aksen</span>
+        <div class="accent-swatch-row" id="accentSwatchRow" role="group" aria-label="Warna Aksen"></div>
+      </div>
       <div class="summary-strip">
-        <span class="summary-ram" id="monTotalRamText">0 MB</span>
+        <span class="summary-ram" id="monTotalRamText" aria-live="polite">0 MB</span>
         <button type="button" class="btn btn-ghost" id="sleepIdleBtn">
           <i class="fa-solid fa-moon" aria-hidden="true"></i>
           <span id="sleepIdleLabel">Sleep Idle</span>

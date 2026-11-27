@@ -24,6 +24,8 @@ pub struct WorkspaceTabSpec {
 pub struct WorkspacePreset {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub accent_color: Option<String>,
     pub tabs: Vec<WorkspaceTabSpec>,
     pub updated_at: u64,
 }
@@ -73,11 +75,12 @@ pub fn specs_from_open_tabs(tabs: &[TabEntry]) -> Vec<WorkspaceTabSpec> {
         .collect()
 }
 
-/// Validates and stores a new Workspace preset from `tabs`.
+/// Validates and stores a new Workspace preset from `tabs` with optional custom accent color.
 pub fn create_workspace_preset(
     workspaces_path: &Path,
     raw_name: &str,
     tabs: Vec<WorkspaceTabSpec>,
+    accent_color: Option<String>,
 ) -> Result<WorkspacePreset, String> {
     let name = raw_name.trim().to_string();
     if name.is_empty() {
@@ -92,9 +95,14 @@ pub fn create_workspace_preset(
         return Err(format!("Workspace \"{name}\" sudah ada"));
     }
 
+    let clean_accent = accent_color
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let preset = WorkspacePreset {
         id: Uuid::new_v4().simple().to_string(),
         name,
+        accent_color: clean_accent,
         tabs,
         updated_at: unix_now_secs(),
     };
@@ -140,12 +148,18 @@ mod tests {
             },
         ];
 
-        assert!(create_workspace_preset(&ws_path, "   ", specs.clone()).is_err());
-        assert!(create_workspace_preset(&ws_path, "Empty", vec![]).is_err());
+        assert!(create_workspace_preset(&ws_path, "   ", specs.clone(), None).is_err());
+        assert!(create_workspace_preset(&ws_path, "Empty", vec![], None).is_err());
 
-        let created = create_workspace_preset(&ws_path, "Staging RBAC Flow", specs).unwrap();
+        let created =
+            create_workspace_preset(&ws_path, "Staging RBAC Flow", specs, Some("#6d28d9".into()))
+                .unwrap();
         assert_eq!(created.tabs.len(), 2);
-        assert!(create_workspace_preset(&ws_path, "staging rbac flow", created.tabs.clone()).is_err());
+        assert_eq!(created.accent_color.as_deref(), Some("#6d28d9"));
+        assert!(
+            create_workspace_preset(&ws_path, "staging rbac flow", created.tabs.clone(), None)
+                .is_err()
+        );
 
         let loaded = load_workspaces(&ws_path);
         assert_eq!(loaded.len(), 1);

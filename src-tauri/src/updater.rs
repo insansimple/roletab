@@ -57,7 +57,14 @@ pub fn compute_download_percent(downloaded_bytes: u64, total_bytes: Option<u64>)
 }
 
 fn emit_update_progress<R: Runtime>(app: &AppHandle<R>, payload: UpdateProgressPayload) {
-    let _ = app.emit_to("ui-shell", "update-progress", payload);
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        for win in state.window_labels() {
+            let lbl = crate::webview::shell_label_for_window(&win);
+            let _ = app.emit_to(&lbl, "update-progress", payload.clone());
+        }
+    } else {
+        let _ = app.emit_to("ui-shell", "update-progress", payload);
+    }
 }
 
 struct InstallGuard<'a, R: Runtime>(&'a AppHandle<R>);
@@ -373,7 +380,15 @@ mod tests {
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let webviews = cap_json["webviews"].as_array().unwrap();
         let allowed: Vec<&str> = webviews.iter().filter_map(|v| v.as_str()).collect();
-        assert_eq!(allowed, vec!["ui-shell", "profile-panel", "download-panel", "task-monitor"]);
+        assert_eq!(
+            allowed,
+            vec![
+                "ui-shell*",
+                "profile-panel*",
+                "download-panel*",
+                "task-monitor*"
+            ]
+        );
         assert!(!allowed.contains(&"*"));
 
         let conf_json: serde_json::Value =
@@ -448,6 +463,7 @@ mod tests {
             for copy in 0..3 {
                 tabs.push(TabEntry {
                     id: format!("tab-p{p_idx}-{copy}"),
+                    window_label: "main".into(),
                     profile_id: rec.id.clone(),
                     profile_key: rec.name.clone(),
                     profile_color: rec.color.clone(),
@@ -473,6 +489,7 @@ mod tests {
         for eph_idx in 0..2 {
             tabs.push(TabEntry {
                 id: format!("tab-eph-{eph_idx}"),
+                window_label: "main".into(),
                 profile_id: format!("ephemeral-tab-eph-{eph_idx}"),
                 profile_key: "Ephemeral".into(),
                 profile_color: "#4b5563".into(),
@@ -496,7 +513,7 @@ mod tests {
         }
 
         *state.tabs.lock().unwrap() = tabs;
-        *state.active_tab_id.lock().unwrap() = Some("tab-p0-0".into());
+        state.set_active_tab_for("main", Some("tab-p0-0".into()));
 
         let snap = state.snapshot();
         assert_eq!(snap.tabs.len(), 14);

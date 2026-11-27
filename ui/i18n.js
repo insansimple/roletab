@@ -129,7 +129,16 @@ window.ROLETAB_I18N = {
     launchWorkspaceBtn: 'Buka',
     emptyWorkspacesTitle: 'Belum ada Workspace',
     emptyWorkspacesDesc: 'Simpan kombinasi tab & role aktif untuk dibuka ulang dalam 1 klik.',
-    workspaceTabsSuffix: 'tab'
+    workspaceTabsSuffix: 'tab',
+    densityLabel: 'Kepadatan UI',
+    densityComfortable: 'Nyaman',
+    densityCompact: 'Rapat',
+    accentLabel: 'Warna Aksen',
+    accentDefault: 'Bawaan',
+    wsAccentLabel: 'Aksen Tema',
+    tabDetachHint: 'Lepas untuk pisah window',
+    windowTabsAria: 'Daftar Tab Browser',
+    navToolbarAria: 'Kontrol Navigasi'
   },
   en: {
     newTab: 'New Tab',
@@ -261,6 +270,15 @@ window.ROLETAB_I18N = {
     launchWorkspaceBtn: 'Launch',
     emptyWorkspacesTitle: 'No saved Workspaces',
     emptyWorkspacesDesc: 'Save open multi-role tabs to relaunch the entire workflow in 1 click.',
-    workspaceTabsSuffix: 'tabs'
+    workspaceTabsSuffix: 'tabs',
+    densityLabel: 'UI Density',
+    densityComfortable: 'Comfortable',
+    densityCompact: 'Compact',
+    accentLabel: 'Accent Theme',
+    accentDefault: 'Default',
+    wsAccentLabel: 'Theme Accent',
+    tabDetachHint: 'Release to detach window',
+    windowTabsAria: 'Browser Tabs',
+    navToolbarAria: 'Browser Navigation'
   }
 };

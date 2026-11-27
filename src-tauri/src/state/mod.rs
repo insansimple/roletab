@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-/// Supported UI Shell themes (`system` follows Windows preference).
+/// Supported UI Shell themes (`system` follows Windows/macOS preference).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
@@ -15,6 +16,20 @@ pub enum ThemeMode {
 impl Default for ThemeMode {
     fn default() -> Self {
         Self::System
+    }
+}
+
+/// Supported UI Shell density presets (`comfortable` = 78px shell, `compact` = 66px shell).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UiDensity {
+    Comfortable,
+    Compact,
+}
+
+impl Default for UiDensity {
+    fn default() -> Self {
+        Self::Comfortable
     }
 }
 
@@ -52,6 +67,10 @@ pub struct AppPreferences {
     pub group_downloads_by_profile: bool,
     #[serde(default = "default_sleep_idle_minutes")]
     pub sleep_idle_minutes: u32,
+    #[serde(default)]
+    pub ui_density: UiDensity,
+    #[serde(default)]
+    pub accent_color: Option<String>,
 }
 
 impl Default for AppPreferences {
@@ -62,6 +81,8 @@ impl Default for AppPreferences {
             default_profile: None,
             group_downloads_by_profile: true,
             sleep_idle_minutes: 15,
+            ui_density: UiDensity::default(),
+            accent_color: None,
         }
     }
 }
@@ -80,6 +101,7 @@ pub enum TabCrashKind {
 #[serde(rename_all = "camelCase")]
 pub struct TabEntry {
     pub id: String,
+    pub window_label: String,
     pub profile_id: String,
     pub profile_key: String,
     pub profile_color: String,
@@ -126,10 +148,35 @@ pub struct DownloadEntry {
     pub finished_at: Option<u64>,
 }
 
-/// Snapshot of application state synchronized to `ui-shell`, `profile-panel`, and `download-panel`.
+/// Per-window UI shell state (`main`, `main-2`, ...) allowing independent multi-monitor windows
+/// while sharing the global profile store safely within a single OS process.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowUiState {
+    pub active_tab_id: Option<String>,
+    pub shell_overlay_open: bool,
+    pub profile_panel_open: bool,
+    pub download_panel_open: bool,
+    pub monitor_panel_open: bool,
+    pub find_bar_open: bool,
+    pub find_query: String,
+}
+
+/// Compact summary of each open main browser window for window switchers & tab context menus.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSummary {
+    pub label: String,
+    pub title: String,
+    pub tab_count: usize,
+}
+
+/// Snapshot of application state synchronized to each window's `ui-shell` and side drawers.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellSnapshot {
+    pub window_label: String,
+    pub windows: Vec<WindowSummary>,
     pub webview2_version: String,
     pub profiles_dir: String,
     pub preferences: AppPreferences,
@@ -137,6 +184,7 @@ pub struct ShellSnapshot {
     pub workspaces: Vec<crate::workspace::WorkspacePreset>,
     pub color_presets: Vec<String>,
     pub tabs: Vec<TabEntry>,
+    pub all_tabs: Vec<TabEntry>,
     pub active_tab_id: Option<String>,
     pub active_awake_count: usize,
     pub total_memory_mb: u64,
@@ -182,13 +230,7 @@ pub struct AppState {
     pub preferences: Mutex<AppPreferences>,
     pub tabs: Mutex<Vec<TabEntry>>,
     pub downloads: Mutex<Vec<DownloadEntry>>,
-    pub active_tab_id: Mutex<Option<String>>,
-    pub shell_overlay_open: Mutex<bool>,
-    pub profile_panel_open: Mutex<bool>,
-    pub download_panel_open: Mutex<bool>,
-    pub monitor_panel_open: Mutex<bool>,
-    pub find_bar_open: Mutex<bool>,
-    pub find_query: Mutex<String>,
+    pub windows: Mutex<HashMap<String, WindowUiState>>,
 }
 
 impl AppState {
@@ -203,6 +245,8 @@ impl AppState {
     ) -> Self {
         let loaded_prefs = load_preferences(&prefs_path);
         let workspaces_path = profiles_store_path.with_file_name("workspaces.json");
+        let mut windows = HashMap::new();
+        windows.insert("main".to_string(), WindowUiState::default());
         Self {
             webview2_version,
             profiles_dir,
@@ -215,20 +259,83 @@ impl AppState {
             preferences: Mutex::new(loaded_prefs),
             tabs: Mutex::new(Vec::new()),
             downloads: Mutex::new(Vec::new()),
-            active_tab_id: Mutex::new(None),
-            shell_overlay_open: Mutex::new(false),
-            profile_panel_open: Mutex::new(false),
-            download_panel_open: Mutex::new(false),
-            monitor_panel_open: Mutex::new(false),
-            find_bar_open: Mutex::new(false),
-            find_query: Mutex::new(String::new()),
+            windows: Mutex::new(windows),
         }
     }
 
-    pub fn snapshot(&self) -> ShellSnapshot {
-        let tabs = self.tabs.lock().unwrap().clone();
-        let active_awake_count = tabs.iter().filter(|t| !t.is_sleeping).count();
-        let total_memory_mb = compute_dedup_memory_mb(&tabs);
+    pub fn ensure_window(&self, win_label: &str) {
+        let mut windows = self.windows.lock().unwrap();
+        windows.entry(win_label.to_string()).or_default();
+    }
+
+    pub fn remove_window(&self, win_label: &str) -> usize {
+        let mut windows = self.windows.lock().unwrap();
+        windows.remove(win_label);
+        windows.len()
+    }
+
+    pub fn window_labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = self.windows.lock().unwrap().keys().cloned().collect();
+        labels.sort();
+        labels
+    }
+
+    pub fn window_state(&self, win_label: &str) -> WindowUiState {
+        self.windows
+            .lock()
+            .unwrap()
+            .get(win_label)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn update_window_state<F: FnOnce(&mut WindowUiState)>(&self, win_label: &str, f: F) {
+        let mut windows = self.windows.lock().unwrap();
+        let entry = windows.entry(win_label.to_string()).or_default();
+        f(entry);
+    }
+
+    pub fn active_tab_for(&self, win_label: &str) -> Option<String> {
+        self.windows
+            .lock()
+            .unwrap()
+            .get(win_label)
+            .and_then(|w| w.active_tab_id.clone())
+    }
+
+    pub fn set_active_tab_for(&self, win_label: &str, tab_id: Option<String>) {
+        self.update_window_state(win_label, |w| {
+            w.active_tab_id = tab_id;
+        });
+    }
+
+    pub fn is_any_active_tab(&self, tab_id: &str) -> bool {
+        self.windows
+            .lock()
+            .unwrap()
+            .values()
+            .any(|w| w.active_tab_id.as_deref() == Some(tab_id))
+    }
+
+    pub fn tab_window_label(&self, tab_id: &str) -> Option<String> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| t.id == tab_id)
+            .map(|t| t.window_label.clone())
+    }
+
+    pub fn snapshot_for_window(&self, win_label: &str) -> ShellSnapshot {
+        let all_tabs = self.tabs.lock().unwrap().clone();
+        let tabs: Vec<TabEntry> = all_tabs
+            .iter()
+            .filter(|t| t.window_label == win_label)
+            .cloned()
+            .collect();
+        let win_ui = self.window_state(win_label);
+        let active_awake_count = all_tabs.iter().filter(|t| !t.is_sleeping).count();
+        let total_memory_mb = compute_dedup_memory_mb(&all_tabs);
         let downloads = self.downloads.lock().unwrap().clone();
         let prefs = self.preferences.lock().unwrap().clone();
         let profiles = crate::profile::sync_profiles_store(
@@ -238,7 +345,24 @@ impl AppState {
             prefs.default_profile.as_deref(),
         );
         let workspaces = crate::workspace::load_workspaces(&self.workspaces_path);
+        let mut win_keys: Vec<String> = self.windows.lock().unwrap().keys().cloned().collect();
+        win_keys.sort();
+        let windows = win_keys
+            .into_iter()
+            .enumerate()
+            .map(|(idx, label)| {
+                let count = all_tabs.iter().filter(|t| t.window_label == label).count();
+                WindowSummary {
+                    label,
+                    title: format!("Window {}", idx + 1),
+                    tab_count: count,
+                }
+            })
+            .collect();
+
         ShellSnapshot {
+            window_label: win_label.to_string(),
+            windows,
             webview2_version: self.webview2_version.clone(),
             profiles_dir: self.profiles_dir.display().to_string(),
             preferences: prefs,
@@ -249,16 +373,22 @@ impl AppState {
                 .map(|c| (*c).to_string())
                 .collect(),
             tabs,
-            active_tab_id: self.active_tab_id.lock().unwrap().clone(),
+            all_tabs,
+            active_tab_id: win_ui.active_tab_id,
             active_awake_count,
             total_memory_mb,
             downloads,
-            profile_panel_open: *self.profile_panel_open.lock().unwrap(),
-            download_panel_open: *self.download_panel_open.lock().unwrap(),
-            monitor_panel_open: *self.monitor_panel_open.lock().unwrap(),
-            find_bar_open: *self.find_bar_open.lock().unwrap(),
-            find_query: self.find_query.lock().unwrap().clone(),
+            profile_panel_open: win_ui.profile_panel_open,
+            download_panel_open: win_ui.download_panel_open,
+            monitor_panel_open: win_ui.monitor_panel_open,
+            find_bar_open: win_ui.find_bar_open,
+            find_query: win_ui.find_query,
         }
+    }
+
+    #[cfg(test)]
+    pub fn snapshot(&self) -> ShellSnapshot {
+        self.snapshot_for_window("main")
     }
 }
 
@@ -323,6 +453,8 @@ mod tests {
             default_profile: Some("admin".to_string()),
             group_downloads_by_profile: false,
             sleep_idle_minutes: 30,
+            ui_density: UiDensity::Compact,
+            accent_color: Some("#6d28d9".to_string()),
         };
         save_preferences(&path, &updated).unwrap();
         assert_eq!(load_preferences(&path), updated);
@@ -334,6 +466,7 @@ mod tests {
     fn compute_dedup_memory_mb_avoids_double_counting_shared_browser_pids() {
         let mk = |id: &str, pid: Option<u32>, mb: Option<u64>| TabEntry {
             id: id.into(),
+            window_label: "main".into(),
             profile_id: "p1".into(),
             profile_key: "Admin".into(),
             profile_color: "#b91c1c".into(),

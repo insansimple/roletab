@@ -17,7 +17,16 @@
     const mode = currentState.preferences?.theme || 'system';
     const resolved = mode === 'system' ? (mediaDark.matches ? 'dark' : 'light') : mode;
     document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-density', currentState.preferences?.uiDensity || 'comfortable');
     document.documentElement.lang = currentState.preferences?.language || 'id';
+    const accent = currentState.preferences?.accentColor;
+    if (accent) {
+      document.documentElement.style.setProperty('--accent-focus', accent);
+      document.documentElement.style.setProperty('--primary-btn', accent);
+    } else {
+      document.documentElement.style.removeProperty('--accent-focus');
+      document.documentElement.style.removeProperty('--primary-btn');
+    }
   }
 
   function statusMeta(status) {

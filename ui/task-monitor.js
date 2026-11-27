@@ -3,7 +3,8 @@
   const { listen } = window.__TAURI__.event;
 
   let currentState = {
-    preferences: { theme: 'system', language: 'id', sleepIdleMinutes: 15 },
+    preferences: { theme: 'system', language: 'id', sleepIdleMinutes: 15, uiDensity: 'comfortable', accentColor: null },
+    colorPresets: [],
     tabs: [],
     activeTabId: null,
     activeAwakeCount: 0,
@@ -20,7 +21,16 @@
     const mode = currentState.preferences?.theme || 'system';
     const resolved = mode === 'system' ? (mediaDark.matches ? 'dark' : 'light') : mode;
     document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-density', currentState.preferences?.uiDensity || 'comfortable');
     document.documentElement.lang = currentState.preferences?.language || 'id';
+    const accent = currentState.preferences?.accentColor;
+    if (accent) {
+      document.documentElement.style.setProperty('--accent-focus', accent);
+      document.documentElement.style.setProperty('--primary-btn', accent);
+    } else {
+      document.documentElement.style.removeProperty('--accent-focus');
+      document.documentElement.style.removeProperty('--primary-btn');
+    }
   }
 
   function updateIdleOptions() {
@@ -34,13 +44,61 @@
 
     const curMins = currentState.preferences?.sleepIdleMinutes;
     sel.value = String(typeof curMins === 'number' ? curMins : 15);
+
+    const denSel = document.getElementById('uiDensitySelect');
+    if (denSel) {
+      denSel.options[0].textContent = t('densityComfortable');
+      denSel.options[1].textContent = t('densityCompact');
+      denSel.value = currentState.preferences?.uiDensity || 'comfortable';
+    }
+  }
+
+  function renderAccentSwatches() {
+    const row = document.getElementById('accentSwatchRow');
+    if (!row) return;
+    row.innerHTML = '';
+    const activeAccent = (currentState.preferences?.accentColor || '').toLowerCase();
+
+    const defBtn = document.createElement('button');
+    defBtn.type = 'button';
+    defBtn.className = 'accent-dot-btn' + (!activeAccent ? ' selected' : '');
+    defBtn.style.backgroundColor = '#1a73e8';
+    defBtn.title = t('accentDefault');
+    defBtn.setAttribute('aria-label', t('accentDefault'));
+    if (!activeAccent) {
+      defBtn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
+    }
+    defBtn.addEventListener('click', () => {
+      invoke('set_preferences', { preferences: { ...currentState.preferences, accentColor: null } });
+    });
+    row.appendChild(defBtn);
+
+    (currentState.colorPresets || []).slice(0, 6).forEach((hex) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      const selected = activeAccent === hex.toLowerCase();
+      btn.className = 'accent-dot-btn' + (selected ? ' selected' : '');
+      btn.style.backgroundColor = hex;
+      btn.title = hex;
+      btn.setAttribute('aria-label', hex);
+      if (selected) {
+        btn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
+      }
+      btn.addEventListener('click', () => {
+        invoke('set_preferences', { preferences: { ...currentState.preferences, accentColor: hex } });
+      });
+      row.appendChild(btn);
+    });
   }
 
   function render() {
     applyTheme();
     document.getElementById('monPanelTitle').textContent = t('taskMonitorTitle');
     document.getElementById('idleSleepLabel').textContent = t('autoSleepIdleLabel');
+    document.getElementById('uiDensityLabel').textContent = t('densityLabel');
+    document.getElementById('accentThemeLabel').textContent = t('accentLabel');
     document.getElementById('sleepIdleLabel').textContent = t('sleepIdleBtn');
+    renderAccentSwatches();
 
     const refBtn = document.getElementById('refreshMonBtn');
     refBtn.setAttribute('aria-label', t('reload'));
@@ -118,6 +176,7 @@
       pinBtn.type = 'button';
       pinBtn.className = 'btn btn-ghost' + (tab.isPinned ? ' active-pin' : '');
       pinBtn.title = tab.isPinned ? t('unpinTab') : t('pinTab');
+      pinBtn.setAttribute('aria-label', pinBtn.title);
       pinBtn.innerHTML = `<i class="fa-solid fa-thumbtack" aria-hidden="true"></i>`;
       pinBtn.addEventListener('click', () => invoke('toggle_tab_pin', { tabId: tab.id }));
       actions.appendChild(pinBtn);
@@ -134,6 +193,7 @@
         sleepBtn.type = 'button';
         sleepBtn.className = 'btn btn-ghost';
         sleepBtn.title = t('sleepTabBtn');
+        sleepBtn.setAttribute('aria-label', t('sleepTabBtn'));
         sleepBtn.disabled = tab.id === currentState.activeTabId || tab.isSleeping || tab.isPinned;
         sleepBtn.innerHTML = `<i class="fa-solid fa-moon" aria-hidden="true"></i>`;
         sleepBtn.addEventListener('click', () => invoke('sleep_tab', { tabId: tab.id }));
@@ -162,6 +222,13 @@
     const mins = Number(e.target.value);
     await invoke('set_preferences', {
       preferences: { ...currentState.preferences, sleepIdleMinutes: mins }
+    });
+  });
+
+  document.getElementById('uiDensitySelect').addEventListener('change', async (e) => {
+    const uiDensity = e.target.value === 'compact' ? 'compact' : 'comfortable';
+    await invoke('set_preferences', {
+      preferences: { ...currentState.preferences, uiDensity }
     });
   });
 

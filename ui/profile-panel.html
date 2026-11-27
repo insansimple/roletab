@@ -90,6 +90,12 @@
       font-size: 13px;
     }
     .icon-btn:hover { background: var(--btn-hover); }
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline: 2px solid var(--accent-focus);
+      outline-offset: 1px;
+    }
 
     .btn {
       height: 28px;
@@ -173,11 +179,25 @@
     }
     .ws-save-form {
       display: flex;
+      flex-direction: column;
       gap: 6px;
       padding: 10px 12px;
       border-bottom: 1px solid var(--border-subtle);
       background: var(--surface-bg);
       flex-shrink: 0;
+    }
+    .ws-save-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .ws-accent-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
     }
     .ws-badges {
       display: flex;
@@ -465,13 +485,13 @@
       </div>
     </div>
 
-    <div class="panel-tabs">
-      <button type="button" class="panel-tab-btn active" id="tabProfilesViewBtn">Profil</button>
-      <button type="button" class="panel-tab-btn" id="tabWorkspacesViewBtn">Workspace</button>
+    <div class="panel-tabs" role="tablist" aria-label="Tampilan Pengelola">
+      <button type="button" class="panel-tab-btn active" id="tabProfilesViewBtn" role="tab" aria-selected="true">Profil</button>
+      <button type="button" class="panel-tab-btn" id="tabWorkspacesViewBtn" role="tab" aria-selected="false">Workspace</button>
     </div>
 
     <div class="side-subbar" id="profilesDirLabel"></div>
-    <div class="notice-bar" id="panelNotice" hidden></div>
+    <div class="notice-bar" id="panelNotice" role="status" aria-live="polite" hidden></div>
 
     <form class="create-box" id="sideCreateForm" hidden novalidate>
       <label class="create-label" id="sideCreateLabel" for="sideProfileInput">Nama Profil</label>
@@ -486,8 +506,14 @@
     </form>
 
     <form class="ws-save-form" id="wsSaveForm" hidden novalidate>
-      <input class="create-input" id="wsNameInput" type="text" maxlength="40" autocomplete="off" />
-      <button type="submit" class="btn btn-primary" id="wsSaveSubmitBtn">Simpan Tab</button>
+      <div class="ws-save-row">
+        <input class="create-input" id="wsNameInput" type="text" maxlength="40" autocomplete="off" />
+        <button type="submit" class="btn btn-primary" id="wsSaveSubmitBtn">Simpan Tab</button>
+      </div>
+      <div class="ws-accent-row">
+        <span id="wsAccentLabel">Aksen Tema</span>
+        <div class="swatch-row" id="wsAccentRow" role="group" aria-label="Aksen Tema"></div>
+      </div>
     </form>
 
     <div class="side-body" id="profileList"></div>

@@ -12,23 +12,23 @@ mod updater;
 mod webview;
 mod workspace;
 
-use tauri::webview::WebviewBuilder;
 use tauri::window::{Color, WindowBuilder};
-use tauri::{Emitter, Manager, WebviewUrl, WindowEvent};
+use tauri::{Emitter, Manager};
 
 use commands::{
     adjust_active_tab_zoom, check_for_updates, clear_download_history, clear_profile_data,
-    close_other_tabs, close_tab, create_tab, create_tab_with_new_profile, delete_profile_dir,
-    delete_workspace, duplicate_tab, export_profile_zip, find_in_active_tab, get_app_info,
-    get_profile_summaries, get_shell_state, go_back_active_tab, go_forward_active_tab,
-    go_home_active_tab, import_profile_zip, install_available_update, launch_workspace,
-    navigate_active_tab, open_active_devtools, recover_tab, refresh_task_monitor,
-    reload_active_tab, reorder_tab, save_current_workspace, set_default_profile,
-    set_download_panel_open, set_find_bar_open, set_monitor_panel_open, set_preferences,
-    set_profile_panel_open, set_shell_overlay_open, show_app_menu, show_download_in_folder,
-    show_new_tab_menu, show_tab_context_menu, show_tab_overflow_menu, sleep_inactive_tabs,
-    sleep_tab, stop_active_tab, switch_tab, toggle_download_panel, toggle_monitor_panel,
-    toggle_profile_panel, toggle_tab_pin, update_profile,
+    close_other_tabs, close_tab, create_tab, create_tab_with_new_profile, create_window,
+    delete_profile_dir, delete_workspace, detach_tab_to_new_window, drop_tab_at_screen_point,
+    duplicate_tab, export_profile_zip, find_in_active_tab, get_app_info, get_profile_summaries,
+    get_shell_state, go_back_active_tab, go_forward_active_tab, go_home_active_tab,
+    import_profile_zip, install_available_update, launch_workspace, move_tab_to_window,
+    navigate_active_tab, open_active_devtools, recover_tab, refresh_task_monitor, reload_active_tab,
+    reorder_tab, save_current_workspace, set_default_profile, set_download_panel_open,
+    set_find_bar_open, set_monitor_panel_open, set_preferences, set_profile_panel_open,
+    set_shell_overlay_open, show_app_menu, show_download_in_folder, show_new_tab_menu,
+    show_tab_context_menu, show_tab_overflow_menu, sleep_inactive_tabs, sleep_tab,
+    stop_active_tab, switch_tab, toggle_download_panel, toggle_monitor_panel, toggle_profile_panel,
+    toggle_tab_pin, update_profile,
 };
 use state::{extract_cli_url, AppState, ThemeMode};
 
@@ -111,32 +111,12 @@ fn main() {
                 win_builder = win_builder.icon(icon.clone())?;
             }
             let window = win_builder.build()?;
+            if let Err(err) = webview::setup_window_lifecycle(app.handle(), &window) {
+                return Err(Box::new(std::io::Error::other(err)));
+            }
 
-            let app_resize = app.handle().clone();
-            window.on_window_event(move |event| match event {
-                WindowEvent::Resized(size) => {
-                    webview::sync_bounds_with_size(&app_resize, size.width, size.height);
-                }
-                WindowEvent::ScaleFactorChanged { .. }
-                | WindowEvent::Moved(_)
-                | WindowEvent::Focused(true) => {
-                    webview::sync_bounds_on_resize(&app_resize);
-                }
-                WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
-                    app_resize.exit(0);
-                }
-                _ => {}
-            });
-
-            let scale = window.scale_factor().unwrap_or(1.0);
-            let inner = window.inner_size()?;
-            let (shell_rect, _) =
-                webview::compute_physical_layout_rects(inner.width, inner.height, scale);
-
-            let shell_builder = WebviewBuilder::new("ui-shell", WebviewUrl::App("index.html".into()));
-            window.add_child(shell_builder, shell_rect.position, shell_rect.size)?;
-            webview::sync_bounds_on_resize(app.handle());
-            let _ = window.show();
+            #[cfg(target_os = "macos")]
+            let _ = webview::platform::install_macos_app_menu(app.handle());
 
             let app_menu = app.handle().clone();
             app.on_menu_event(move |_app_handle, event| {
@@ -153,6 +133,25 @@ fn main() {
                     let _ = webview::sleep_tab_sync(&app_menu, tab_id);
                     return;
                 }
+                if let Some(tab_id) = id.strip_prefix("ctx-detach:") {
+                    let handle = app_menu.clone();
+                    let target = tab_id.to_string();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = webview::detach_tab_to_new_window_sync(handle, &target, None, None);
+                    });
+                    return;
+                }
+                if let Some(rest) = id.strip_prefix("ctx-move-win:") {
+                    if let Some((tab_id, target_win)) = rest.split_once(':') {
+                        let handle = app_menu.clone();
+                        let t_id = tab_id.to_string();
+                        let w_lbl = target_win.to_string();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let _ = webview::move_tab_to_window_sync(handle, &t_id, &w_lbl);
+                        });
+                    }
+                    return;
+                }
                 if let Some(tab_id) = id.strip_prefix("ctx-close-others:") {
                     let _ = webview::close_other_tabs_sync(&app_menu, tab_id);
                     return;
@@ -166,54 +165,129 @@ fn main() {
                     return;
                 }
 
-                if id == "new-tab:create-profile" {
-                    let _ = app_menu.emit_to("ui-shell", "open-new-profile-modal", ());
-                    return;
-                }
-                if id == "menu:profile-manager" {
+                if id == "menu:new-window" {
                     let handle = app_menu.clone();
                     tauri::async_runtime::spawn_blocking(move || {
-                        let _ = webview::set_profile_panel_open_sync(&handle, true);
+                        let _ = webview::spawn_browser_window(handle, None, None, None, None);
                     });
                     return;
                 }
-                if id == "menu:download-panel" {
+                if let Some(win) = id
+                    .strip_prefix("new-tab:create-profile:")
+                    .or_else(|| (id == "new-tab:create-profile").then_some("main"))
+                {
+                    let shell_lbl = webview::shell_label_for_window(win);
+                    let _ = app_menu.emit_to(&shell_lbl, "open-new-profile-modal", ());
+                    return;
+                }
+                if let Some(win) = id
+                    .strip_prefix("menu:profile-manager:")
+                    .or_else(|| (id == "menu:profile-manager").then_some("main"))
+                {
                     let handle = app_menu.clone();
+                    let w = win.to_string();
                     tauri::async_runtime::spawn_blocking(move || {
-                        let _ = webview::set_download_panel_open_sync(&handle, true);
+                        let _ = webview::set_profile_panel_open_in_window(&handle, &w, true);
                     });
                     return;
                 }
-                if id == "menu:task-monitor" {
+                if let Some(win) = id
+                    .strip_prefix("menu:download-panel:")
+                    .or_else(|| (id == "menu:download-panel").then_some("main"))
+                {
                     let handle = app_menu.clone();
+                    let w = win.to_string();
                     tauri::async_runtime::spawn_blocking(move || {
-                        let _ = webview::set_monitor_panel_open_sync(&handle, true);
+                        let _ = webview::set_download_panel_open_in_window(&handle, &w, true);
                     });
                     return;
                 }
-                if id == "menu:devtools" {
+                if let Some(win) = id
+                    .strip_prefix("menu:task-monitor:")
+                    .or_else(|| (id == "menu:task-monitor").then_some("main"))
+                {
                     let handle = app_menu.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = open_active_devtools(handle).await;
+                    let w = win.to_string();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = webview::set_monitor_panel_open_in_window(&handle, &w, true);
                     });
                     return;
                 }
-                if id == "menu:about" {
-                    let _ = app_menu.emit_to("ui-shell", "open-about-modal", ());
+                if let Some(win) = id
+                    .strip_prefix("menu:devtools:")
+                    .or_else(|| (id == "menu:devtools").then_some("main"))
+                {
+                    if let Some(tab_id) = app_menu.state::<AppState>().active_tab_for(win) {
+                        if let Some(wv) = app_menu.get_webview(&tab_id) {
+                            wv.open_devtools();
+                        }
+                    }
+                    return;
+                }
+                if let Some(win) = id
+                    .strip_prefix("menu:about:")
+                    .or_else(|| (id == "menu:about").then_some("main"))
+                {
+                    let shell_lbl = webview::shell_label_for_window(win);
+                    let _ = app_menu.emit_to(&shell_lbl, "open-about-modal", ());
+                    return;
+                }
+                if let Some(action) = match id.as_str() {
+                    "mac:new-tab" => Some("new_tab"),
+                    "mac:close-tab" => Some("close_tab"),
+                    "mac:reload" => Some("reload_tab"),
+                    "mac:focus-url" => Some("focus_address_bar"),
+                    _ => None,
+                } {
+                    let target_win = app_menu
+                        .state::<AppState>()
+                        .window_labels()
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| "main".to_string());
+                    let shell_lbl = webview::shell_label_for_window(&target_win);
+                    let _ = app_menu.emit_to(
+                        &shell_lbl,
+                        "shell-shortcut",
+                        webview::bridge::ShortcutEventPayload {
+                            tab_id: String::new(),
+                            action: action.to_string(),
+                        },
+                    );
                     return;
                 }
 
                 let spawn_handle = app_menu.clone();
-                if let Some(profile_key) = id.strip_prefix("new-tab:profile:") {
-                    let target_profile = profile_key.to_string();
+                if let Some(rest) = id.strip_prefix("new-tab:profile:") {
+                    let (target_win, target_profile) = if let Some((w, p)) = rest.split_once(':') {
+                        (w.to_string(), p.to_string())
+                    } else {
+                        ("main".to_string(), rest.to_string())
+                    };
                     tauri::async_runtime::spawn_blocking(move || {
-                        let _ = webview::spawn_tab(spawn_handle, target_profile, false, None);
+                        let _ = webview::spawn_tab_in_window(
+                            spawn_handle,
+                            &target_win,
+                            target_profile,
+                            false,
+                            None,
+                        );
                     });
                     return;
                 }
-                if id == "new-tab:ephemeral" {
+                if let Some(win) = id
+                    .strip_prefix("new-tab:ephemeral:")
+                    .or_else(|| (id == "new-tab:ephemeral").then_some("main"))
+                {
+                    let target_win = win.to_string();
                     tauri::async_runtime::spawn_blocking(move || {
-                        let _ = webview::spawn_tab(spawn_handle, "ephemeral".into(), true, None);
+                        let _ = webview::spawn_tab_in_window(
+                            spawn_handle,
+                            &target_win,
+                            "ephemeral".into(),
+                            true,
+                            None,
+                        );
                     });
                     return;
                 }
@@ -283,7 +357,10 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(4));
                 let result = tauri::async_runtime::block_on(updater::check_for_updates_async(&app_upd));
                 if result.available {
-                    let _ = app_upd.emit_to("ui-shell", "update-available", result);
+                    for win in app_upd.state::<AppState>().window_labels() {
+                        let shell_lbl = webview::shell_label_for_window(&win);
+                        let _ = app_upd.emit_to(&shell_lbl, "update-available", result.clone());
+                    }
                 }
             });
 
@@ -319,6 +396,10 @@ fn main() {
             export_profile_zip,
             import_profile_zip,
             set_preferences,
+            create_window,
+            detach_tab_to_new_window,
+            move_tab_to_window,
+            drop_tab_at_screen_point,
             create_tab,
             create_tab_with_new_profile,
             set_shell_overlay_open,

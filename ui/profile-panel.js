@@ -18,6 +18,7 @@
   let editingProxyMode = 'direct';
   let editingProxyAddress = '';
   let createSelectedColor = '#1d4ed8';
+  let wsAccentColor = null;
   let openMenuProfId = null;
   let noticeTimer = null;
   const mediaDark = window.matchMedia('(prefers-color-scheme: dark)');
@@ -31,7 +32,16 @@
     const mode = currentState.preferences?.theme || 'system';
     const resolved = mode === 'system' ? (mediaDark.matches ? 'dark' : 'light') : mode;
     document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-density', currentState.preferences?.uiDensity || 'comfortable');
     document.documentElement.lang = currentState.preferences?.language || 'id';
+    const accent = currentState.preferences?.accentColor;
+    if (accent) {
+      document.documentElement.style.setProperty('--accent-focus', accent);
+      document.documentElement.style.setProperty('--primary-btn', accent);
+    } else {
+      document.documentElement.style.removeProperty('--accent-focus');
+      document.documentElement.style.removeProperty('--primary-btn');
+    }
   }
 
   function applyTexts() {
@@ -47,6 +57,8 @@
     document.getElementById('sideCreateSubmitBtn').textContent = t('createProfileBtn');
     document.getElementById('wsNameInput').placeholder = t('workspaceNamePlaceholder');
     document.getElementById('wsSaveSubmitBtn').textContent = t('saveWorkspaceBtn');
+    const wsAccLbl = document.getElementById('wsAccentLabel');
+    if (wsAccLbl) wsAccLbl.textContent = t('wsAccentLabel');
 
     const closeBtn = document.getElementById('closePanelBtn');
     closeBtn.setAttribute('aria-label', t('closeModal'));
@@ -558,7 +570,46 @@
     }
   }
 
+  function renderWsAccentSwatches() {
+    const row = document.getElementById('wsAccentRow');
+    if (!row) return;
+    row.innerHTML = '';
+
+    const defBtn = document.createElement('button');
+    defBtn.type = 'button';
+    defBtn.className = 'swatch-btn' + (!wsAccentColor ? ' selected' : '');
+    defBtn.style.backgroundColor = '#1a73e8';
+    defBtn.title = t('accentDefault');
+    defBtn.setAttribute('aria-label', t('accentDefault'));
+    if (!wsAccentColor) {
+      defBtn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
+    }
+    defBtn.addEventListener('click', () => {
+      wsAccentColor = null;
+      renderWsAccentSwatches();
+    });
+    row.appendChild(defBtn);
+
+    (currentState.colorPresets || []).slice(0, 5).forEach((hex) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      const isSelected = wsAccentColor && wsAccentColor.toLowerCase() === hex.toLowerCase();
+      btn.className = 'swatch-btn' + (isSelected ? ' selected' : '');
+      btn.style.backgroundColor = hex;
+      btn.setAttribute('aria-label', hex);
+      if (isSelected) {
+        btn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
+      }
+      btn.addEventListener('click', () => {
+        wsAccentColor = hex;
+        renderWsAccentSwatches();
+      });
+      row.appendChild(btn);
+    });
+  }
+
   function renderWorkspaces() {
+    renderWsAccentSwatches();
     const list = document.getElementById('workspaceList');
     list.innerHTML = '';
     const workspaces = currentState.workspaces || [];
@@ -581,15 +632,25 @@
       const info = document.createElement('div');
       info.className = 'profile-info';
 
+      const nameRow = document.createElement('div');
+      nameRow.className = 'profile-name-row';
+      if (ws.accentColor) {
+        const dot = document.createElement('span');
+        dot.style.cssText = `width:8px;height:8px;border-radius:4px;background:${ws.accentColor};flex-shrink:0;`;
+        dot.setAttribute('aria-hidden', 'true');
+        nameRow.appendChild(dot);
+      }
+
       const nameEl = document.createElement('span');
       nameEl.className = 'profile-name';
       nameEl.textContent = ws.name;
+      nameRow.appendChild(nameEl);
 
       const meta = document.createElement('span');
       meta.className = 'profile-meta';
       meta.textContent = `${ws.tabs.length} ${t('workspaceTabsSuffix')}`;
 
-      info.append(nameEl, meta);
+      info.append(nameRow, meta);
 
       const actions = document.createElement('div');
       actions.className = 'profile-actions';
@@ -629,8 +690,12 @@
 
   function syncViewTabs() {
     const isProf = activeView === 'profiles';
-    document.getElementById('tabProfilesViewBtn').classList.toggle('active', isProf);
-    document.getElementById('tabWorkspacesViewBtn').classList.toggle('active', !isProf);
+    const profTab = document.getElementById('tabProfilesViewBtn');
+    const wsTab = document.getElementById('tabWorkspacesViewBtn');
+    profTab.classList.toggle('active', isProf);
+    wsTab.classList.toggle('active', !isProf);
+    profTab.setAttribute('aria-selected', String(isProf));
+    wsTab.setAttribute('aria-selected', String(!isProf));
     document.getElementById('profileList').hidden = !isProf;
     document.getElementById('workspaceList').hidden = isProf;
     document.getElementById('wsSaveForm').hidden = isProf;
@@ -638,6 +703,7 @@
     document.getElementById('importProfileBtn').hidden = !isProf;
     if (!isProf) {
       hideCreateForm();
+      renderWsAccentSwatches();
     }
   }
 
@@ -682,7 +748,7 @@
       return;
     }
     try {
-      await invoke('save_current_workspace', { name });
+      await invoke('save_current_workspace', { name, accentColor: wsAccentColor });
       inp.value = '';
     } catch (err) {
       showNotice(String(err));

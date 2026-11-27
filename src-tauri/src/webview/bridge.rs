@@ -111,6 +111,7 @@ pub fn map_accelerator_key(vk: u32, ctrl: bool, shift: bool) -> Option<&'static 
         return match vk {
             VK_T => Some("new_tab"),
             VK_W => Some("close_tab"),
+            VK_N => Some("new_window"),
             VK_TAB => Some("next_tab"),
             VK_L => Some("focus_address_bar"),
             VK_F => Some("find_in_page"),
@@ -203,8 +204,9 @@ pub fn attach_native_hooks<R: Runtime>(
 
                 if let Some(action) = map_accelerator_key(vk, ctrl, shift) {
                     let _ = args.SetHandled(true);
+                    let target_shell = crate::webview::shell_label_for_tab(&app_key, &tab_key);
                     let _ = app_key.emit_to(
-                        "ui-shell",
+                        &target_shell,
                         "shell-shortcut",
                         ShortcutEventPayload {
                             tab_id: tab_key.clone(),
@@ -587,8 +589,9 @@ pub fn suspend_webview<R: Runtime>(
             let _ = controller.SetIsVisible(false);
 
             let Ok(core) = controller.CoreWebView2() else {
+                let target_shell = crate::webview::shell_label_for_tab(&app, &tab_id);
                 let _ = app.emit_to(
-                    "ui-shell",
+                    &target_shell,
                     "shell-suspend-result",
                     SuspendResultPayload {
                         tab_id,
@@ -600,8 +603,9 @@ pub fn suspend_webview<R: Runtime>(
             };
 
             let Ok(wv3) = core.cast::<ICoreWebView2_3>() else {
+                let target_shell = crate::webview::shell_label_for_tab(&app, &tab_id);
                 let _ = app.emit_to(
-                    "ui-shell",
+                    &target_shell,
                     "shell-suspend-result",
                     SuspendResultPayload {
                         tab_id,
@@ -617,8 +621,9 @@ pub fn suspend_webview<R: Runtime>(
             let handler = TrySuspendCompletedHandler::create(Box::new(move |hr, is_successful| {
                 let suspended = hr.is_ok() && is_successful;
                 crate::webview::apply_suspend_outcome(&app_clone, &tab_clone, suspended);
+                let target_shell = crate::webview::shell_label_for_tab(&app_clone, &tab_clone);
                 let _ = app_clone.emit_to(
-                    "ui-shell",
+                    &target_shell,
                     "shell-suspend-result",
                     SuspendResultPayload {
                         tab_id: tab_clone.clone(),
@@ -631,8 +636,9 @@ pub fn suspend_webview<R: Runtime>(
 
             if wv3.TrySuspend(&handler).is_err() {
                 crate::webview::apply_suspend_outcome(&app, &tab_id, false);
+                let target_shell = crate::webview::shell_label_for_tab(&app, &tab_id);
                 let _ = app.emit_to(
-                    "ui-shell",
+                    &target_shell,
                     "shell-suspend-result",
                     SuspendResultPayload {
                         tab_id,
@@ -830,6 +836,7 @@ mod tests {
     fn maps_all_fr2_shortcuts_accurately() {
         assert_eq!(map_accelerator_key(0x54, true, false), Some("new_tab"));
         assert_eq!(map_accelerator_key(0x57, true, false), Some("close_tab"));
+        assert_eq!(map_accelerator_key(0x4E, true, false), Some("new_window"));
         assert_eq!(map_accelerator_key(0x09, true, false), Some("next_tab"));
         assert_eq!(map_accelerator_key(0x09, true, true), Some("prev_tab"));
         assert_eq!(map_accelerator_key(0x4C, true, false), Some("focus_address_bar"));

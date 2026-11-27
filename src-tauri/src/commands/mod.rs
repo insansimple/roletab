@@ -20,22 +20,32 @@ use crate::updater::{
     check_for_updates_async, install_pending_update_async, AppInfoSnapshot, UpdateCheckResult,
 };
 use crate::webview::{
-    adjust_active_tab_zoom_sync, bridge, close_other_tabs_sync, close_tab_internal,
-    default_startup_profile, duplicate_tab_sync, emit_shell_state, export_profile_archive_sync,
-    find_in_active_tab_sync, launch_workspace_sync, normalize_address_input, recover_tab_sync,
-    refresh_memory_metrics, reorder_tabs_vec, set_download_panel_open_sync,
-    set_find_bar_open_sync, set_monitor_panel_open_sync, set_profile_panel_open_sync,
-    sleep_inactive_tabs_sync, sleep_tab_sync, spawn_tab, switch_tab_sync, sync_bounds_on_resize,
-    toggle_tab_pin_sync, DEFAULT_NEW_TAB_URL, UI_SHELL_HEIGHT,
+    adjust_active_tab_zoom_in_window, close_other_tabs_sync, close_tab_internal,
+    default_startup_profile, detach_tab_to_new_window_sync, drop_tab_at_screen_point_sync,
+    duplicate_tab_sync, emit_shell_state, export_profile_archive_sync,
+    find_in_active_tab_in_window, launch_workspace_in_window, move_tab_to_window_sync,
+    normalize_address_input, platform::{self, PlatformWebviewController}, recover_tab_sync,
+    refresh_memory_metrics, reorder_window_tabs_vec, set_download_panel_open_in_window,
+    set_find_bar_open_in_window, set_monitor_panel_open_in_window,
+    set_profile_panel_open_in_window, shell_label_for_window, sleep_inactive_tabs_sync,
+    sleep_tab_sync, spawn_browser_window, spawn_tab_in_window, switch_tab_sync,
+    sync_bounds_on_resize, sync_bounds_on_resize_for_window, toggle_tab_pin_sync,
+    window_label_from_webview_label, DEFAULT_NEW_TAB_URL, UI_SHELL_HEIGHT,
 };
 use crate::workspace::{
     create_workspace_preset, delete_workspace_preset, specs_from_open_tabs, WorkspacePreset,
 };
 
 #[tauri::command]
-pub fn get_shell_state(app: AppHandle<tauri::Wry>, state: State<'_, AppState>) -> ShellSnapshot {
-    sync_bounds_on_resize(&app);
-    state.snapshot()
+pub fn get_shell_state(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> ShellSnapshot {
+    let win_label = window_label_from_webview_label(webview.label());
+    state.ensure_window(&win_label);
+    sync_bounds_on_resize_for_window(&app, &win_label);
+    state.snapshot_for_window(&win_label)
 }
 
 #[tauri::command]
@@ -46,20 +56,80 @@ pub fn set_preferences(
     let state = app.state::<AppState>();
     save_preferences(&state.prefs_path, &preferences)?;
     *state.preferences.lock().unwrap() = preferences.clone();
+    sync_bounds_on_resize(&app);
     emit_shell_state(&app);
     Ok(preferences)
 }
 
 #[tauri::command]
+pub async fn create_window(
+    app: AppHandle<tauri::Wry>,
+    profile_key: Option<String>,
+    is_ephemeral: Option<bool>,
+    url: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        spawn_browser_window(app, profile_key, is_ephemeral, url, None)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn detach_tab_to_new_window(
+    app: AppHandle<tauri::Wry>,
+    tab_id: String,
+    screen_x: Option<i32>,
+    screen_y: Option<i32>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        detach_tab_to_new_window_sync(app, &tab_id, screen_x, screen_y)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn move_tab_to_window(
+    app: AppHandle<tauri::Wry>,
+    tab_id: String,
+    target_window_label: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        move_tab_to_window_sync(app, &tab_id, &target_window_label)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn drop_tab_at_screen_point(
+    app: AppHandle<tauri::Wry>,
+    tab_id: String,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        drop_tab_at_screen_point_sync(app, &tab_id, screen_x, screen_y)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn create_tab(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     profile_key: String,
     is_ephemeral: bool,
     url: Option<String>,
 ) -> Result<TabEntry, String> {
-    tauri::async_runtime::spawn_blocking(move || spawn_tab(app, profile_key, is_ephemeral, url))
-        .await
-        .map_err(|e| e.to_string())?
+    let win_label = window_label_from_webview_label(webview.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        spawn_tab_in_window(app, &win_label, profile_key, is_ephemeral, url)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -84,13 +154,15 @@ pub async fn duplicate_tab(
 #[tauri::command]
 pub async fn reorder_tab(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     from_index: usize,
     to_index: usize,
 ) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let changed = {
         let state = app.state::<AppState>();
         let mut tabs = state.tabs.lock().unwrap();
-        reorder_tabs_vec(&mut tabs, from_index, to_index)
+        reorder_window_tabs_vec(&mut tabs, &win_label, from_index, to_index)
     };
     if changed {
         emit_shell_state(&app);
@@ -99,13 +171,15 @@ pub async fn reorder_tab(
 }
 
 #[tauri::command]
-pub async fn navigate_active_tab(app: AppHandle<tauri::Wry>, url: String) -> Result<(), String> {
+pub async fn navigate_active_tab(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    url: String,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let active_id = app
         .state::<AppState>()
-        .active_tab_id
-        .lock()
-        .unwrap()
-        .clone()
+        .active_tab_for(&win_label)
         .ok_or_else(|| "Tidak ada tab aktif".to_string())?;
     let parsed = normalize_address_input(&url)?;
     if let Some(wv) = app.get_webview(&active_id) {
@@ -116,28 +190,40 @@ pub async fn navigate_active_tab(app: AppHandle<tauri::Wry>, url: String) -> Res
 }
 
 #[tauri::command]
-pub async fn go_back_active_tab(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    if let Some(id) = app.state::<AppState>().active_tab_id.lock().unwrap().clone() {
+pub async fn go_back_active_tab(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    if let Some(id) = app.state::<AppState>().active_tab_for(&win_label) {
         if let Some(wv) = app.get_webview(&id) {
-            bridge::go_back_webview(&wv)?;
+            platform::ACTIVE_CONTROLLER.go_back(&wv)?;
         }
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn go_forward_active_tab(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    if let Some(id) = app.state::<AppState>().active_tab_id.lock().unwrap().clone() {
+pub async fn go_forward_active_tab(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    if let Some(id) = app.state::<AppState>().active_tab_for(&win_label) {
         if let Some(wv) = app.get_webview(&id) {
-            bridge::go_forward_webview(&wv)?;
+            platform::ACTIVE_CONTROLLER.go_forward(&wv)?;
         }
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn reload_active_tab(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    if let Some(id) = app.state::<AppState>().active_tab_id.lock().unwrap().clone() {
+pub async fn reload_active_tab(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    if let Some(id) = app.state::<AppState>().active_tab_for(&win_label) {
         if let Some(wv) = app.get_webview(&id) {
             wv.reload().map_err(|e| e.to_string())?;
         }
@@ -146,18 +232,26 @@ pub async fn reload_active_tab(app: AppHandle<tauri::Wry>) -> Result<(), String>
 }
 
 #[tauri::command]
-pub async fn stop_active_tab(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    if let Some(id) = app.state::<AppState>().active_tab_id.lock().unwrap().clone() {
+pub async fn stop_active_tab(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    if let Some(id) = app.state::<AppState>().active_tab_for(&win_label) {
         if let Some(wv) = app.get_webview(&id) {
-            bridge::stop_webview(&wv)?;
+            platform::ACTIVE_CONTROLLER.stop(&wv)?;
         }
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn go_home_active_tab(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    if let Some(id) = app.state::<AppState>().active_tab_id.lock().unwrap().clone() {
+pub async fn go_home_active_tab(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    if let Some(id) = app.state::<AppState>().active_tab_for(&win_label) {
         if let Some(wv) = app.get_webview(&id) {
             let parsed: url::Url = DEFAULT_NEW_TAB_URL.parse().map_err(|e: url::ParseError| e.to_string())?;
             wv.navigate(parsed).map_err(|e| e.to_string())?;
@@ -169,9 +263,11 @@ pub async fn go_home_active_tab(app: AppHandle<tauri::Wry>) -> Result<(), String
 #[tauri::command]
 pub async fn create_tab_with_new_profile(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     profile_name: String,
     color: Option<String>,
 ) -> Result<TabEntry, String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let record = {
         let state = app.state::<AppState>();
         let rec = create_profile_record(
@@ -181,18 +277,21 @@ pub async fn create_tab_with_new_profile(
             &profile_name,
             color.as_deref(),
         )?;
-        *state.shell_overlay_open.lock().unwrap() = false;
+        state.update_window_state(&win_label, |w| {
+            w.shell_overlay_open = false;
+        });
         rec
     };
 
     let app_spawn = app.clone();
+    let win_spawn = win_label.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        spawn_tab(app_spawn, record.id, false, None)
+        spawn_tab_in_window(app_spawn, &win_spawn, record.id, false, None)
     })
     .await
     .map_err(|e| e.to_string())?;
 
-    sync_bounds_on_resize(&app);
+    sync_bounds_on_resize_for_window(&app, &win_label);
     res
 }
 
@@ -280,16 +379,22 @@ pub async fn clear_profile_data(
 }
 
 #[tauri::command]
-pub fn set_shell_overlay_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<(), String> {
+pub fn set_shell_overlay_open(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    open: bool,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let active_id = {
         let state = app.state::<AppState>();
-        *state.shell_overlay_open.lock().unwrap() = open;
-        let active = state.active_tab_id.lock().unwrap().clone();
-        active
+        state.update_window_state(&win_label, |w| {
+            w.shell_overlay_open = open;
+        });
+        state.active_tab_for(&win_label)
     };
-    sync_bounds_on_resize(&app);
+    sync_bounds_on_resize_for_window(&app, &win_label);
     if open {
-        if let Some(shell) = app.get_webview("ui-shell") {
+        if let Some(shell) = app.get_webview(&shell_label_for_window(&win_label)) {
             let _ = shell.set_focus();
         }
     } else if let Some(tab_id) = active_id {
@@ -301,33 +406,65 @@ pub fn set_shell_overlay_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<
 }
 
 #[tauri::command]
-pub async fn set_profile_panel_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || set_profile_panel_open_sync(&app, open))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn set_profile_panel_open(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    open: bool,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        set_profile_panel_open_in_window(&app, &win_label, open)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn toggle_profile_panel(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    let next = !*app.state::<AppState>().profile_panel_open.lock().unwrap();
-    tauri::async_runtime::spawn_blocking(move || set_profile_panel_open_sync(&app, next))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn toggle_profile_panel(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    let next = !app
+        .state::<AppState>()
+        .window_state(&win_label)
+        .profile_panel_open;
+    tauri::async_runtime::spawn_blocking(move || {
+        set_profile_panel_open_in_window(&app, &win_label, next)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn set_download_panel_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || set_download_panel_open_sync(&app, open))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn set_download_panel_open(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    open: bool,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        set_download_panel_open_in_window(&app, &win_label, open)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn toggle_download_panel(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    let next = !*app.state::<AppState>().download_panel_open.lock().unwrap();
-    tauri::async_runtime::spawn_blocking(move || set_download_panel_open_sync(&app, next))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn toggle_download_panel(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    let next = !app
+        .state::<AppState>()
+        .window_state(&win_label)
+        .download_panel_open;
+    tauri::async_runtime::spawn_blocking(move || {
+        set_download_panel_open_in_window(&app, &win_label, next)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -364,18 +501,34 @@ pub async fn sleep_inactive_tabs(app: AppHandle<tauri::Wry>) -> Result<usize, St
 }
 
 #[tauri::command]
-pub async fn set_monitor_panel_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || set_monitor_panel_open_sync(&app, open))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn set_monitor_panel_open(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    open: bool,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        set_monitor_panel_open_in_window(&app, &win_label, open)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn toggle_monitor_panel(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    let next = !*app.state::<AppState>().monitor_panel_open.lock().unwrap();
-    tauri::async_runtime::spawn_blocking(move || set_monitor_panel_open_sync(&app, next))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn toggle_monitor_panel(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    let next = !app
+        .state::<AppState>()
+        .window_state(&win_label)
+        .monitor_panel_open;
+    tauri::async_runtime::spawn_blocking(move || {
+        set_monitor_panel_open_in_window(&app, &win_label, next)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -401,36 +554,53 @@ pub async fn recover_tab(app: AppHandle<tauri::Wry>, tab_id: String) -> Result<(
 #[tauri::command]
 pub async fn adjust_active_tab_zoom(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     delta: Option<f64>,
 ) -> Result<f64, String> {
-    adjust_active_tab_zoom_sync(&app, delta)
+    let win_label = window_label_from_webview_label(webview.label());
+    adjust_active_tab_zoom_in_window(&app, &win_label, delta)
 }
 
 #[tauri::command]
-pub async fn set_find_bar_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<(), String> {
-    set_find_bar_open_sync(&app, open)
+pub async fn set_find_bar_open(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    open: bool,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    set_find_bar_open_in_window(&app, &win_label, open)
 }
 
 #[tauri::command]
 pub async fn find_in_active_tab(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     query: String,
     forward: bool,
 ) -> Result<usize, String> {
-    find_in_active_tab_sync(&app, &query, forward)
+    let win_label = window_label_from_webview_label(webview.label());
+    find_in_active_tab_in_window(&app, &win_label, &query, forward)
 }
 
 #[tauri::command]
 pub fn save_current_workspace(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     name: String,
+    accent_color: Option<String>,
 ) -> Result<WorkspacePreset, String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let state = app.state::<AppState>();
     let specs = {
         let tabs = state.tabs.lock().unwrap();
-        specs_from_open_tabs(&tabs)
+        let win_tabs: Vec<TabEntry> = tabs
+            .iter()
+            .filter(|t| t.window_label == win_label)
+            .cloned()
+            .collect();
+        specs_from_open_tabs(&win_tabs)
     };
-    let created = create_workspace_preset(&state.workspaces_path, &name, specs)?;
+    let created = create_workspace_preset(&state.workspaces_path, &name, specs, accent_color)?;
     emit_shell_state(&app);
     Ok(created)
 }
@@ -446,11 +616,15 @@ pub fn delete_workspace(app: AppHandle<tauri::Wry>, workspace_id: String) -> Res
 #[tauri::command]
 pub async fn launch_workspace(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     workspace_id: String,
 ) -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(move || launch_workspace_sync(app, &workspace_id))
-        .await
-        .map_err(|e| e.to_string())?
+    let win_label = window_label_from_webview_label(webview.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        launch_workspace_in_window(app, &win_label, &workspace_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -583,10 +757,16 @@ pub fn set_default_profile(
 
 #[tauri::command]
 pub async fn close_tab(app: AppHandle<tauri::Wry>, tab_id: String) -> Result<(), String> {
-    let fallback_profile = {
+    let (win_label, fallback_profile) = {
         let state = app.state::<AppState>();
         let tabs = state.tabs.lock().unwrap();
-        if tabs.len() <= 1 && tabs.iter().any(|t| t.id == tab_id) {
+        let target_win = tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .map(|t| t.window_label.clone())
+            .unwrap_or_else(|| "main".to_string());
+        let win_tab_count = tabs.iter().filter(|t| t.window_label == target_win).count();
+        let fb = if win_tab_count <= 1 && tabs.iter().any(|t| t.id == tab_id) {
             let def = state.preferences.lock().unwrap().default_profile.clone();
             Some(default_startup_profile(
                 &state.profiles_dir,
@@ -596,14 +776,16 @@ pub async fn close_tab(app: AppHandle<tauri::Wry>, tab_id: String) -> Result<(),
             ))
         } else {
             None
-        }
+        };
+        (target_win, fb)
     };
 
-    // Spawn the replacement tab BEFORE closing the last tab so viewport never turns black.
+    // Spawn the replacement tab BEFORE closing the last tab in that window so viewport never flashes.
     if let Some((profile_key, is_ephemeral)) = fallback_profile {
         let app_spawn = app.clone();
+        let win_spawn = win_label.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            spawn_tab(app_spawn, profile_key, is_ephemeral, None)
+            spawn_tab_in_window(app_spawn, &win_spawn, profile_key, is_ephemeral, None)
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -621,8 +803,9 @@ pub async fn close_tab(app: AppHandle<tauri::Wry>, tab_id: String) -> Result<(),
                 def.as_deref(),
             )
         };
+        let win_spawn = win_label.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            spawn_tab(app, profile_key, is_ephemeral, None)
+            spawn_tab_in_window(app, &win_spawn, profile_key, is_ephemeral, None)
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -707,10 +890,23 @@ pub async fn delete_profile_dir(
                 def.as_deref(),
             )
         };
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            spawn_tab(app_spawn, fallback_key, is_ephemeral, None)
-        })
-        .await;
+        let win_labels = app.state::<AppState>().window_labels();
+        let empty_wins: Vec<String> = {
+            let state = app.state::<AppState>();
+            let tabs = state.tabs.lock().unwrap();
+            win_labels
+                .into_iter()
+                .filter(|w| !tabs.iter().any(|t| t.window_label == *w))
+                .collect()
+        };
+        for ew in empty_wins {
+            let h = app_spawn.clone();
+            let fk = fallback_key.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                spawn_tab_in_window(h, &ew, fk, is_ephemeral, None)
+            })
+            .await;
+        }
     }
 
     emit_shell_state(&app);
@@ -736,12 +932,14 @@ pub async fn delete_profile_dir(
 #[tauri::command]
 pub async fn show_new_tab_menu(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     x: f64,
     y: f64,
 ) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(&win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
 
     let (profiles, is_en) = {
         let state = app.state::<AppState>();
@@ -757,21 +955,24 @@ pub async fn show_new_tab_menu(
 
     let mut builder = MenuBuilder::new(&app);
     for prof in &profiles {
-        let item = MenuItemBuilder::with_id(format!("new-tab:profile:{}", prof.id), &prof.name)
-            .build(&app)
-            .map_err(|e| e.to_string())?;
+        let item = MenuItemBuilder::with_id(
+            format!("new-tab:profile:{win_label}:{}", prof.id),
+            &prof.name,
+        )
+        .build(&app)
+        .map_err(|e| e.to_string())?;
         builder = builder.item(&item);
     }
 
     let create_new = MenuItemBuilder::with_id(
-        "new-tab:create-profile",
+        format!("new-tab:create-profile:{win_label}"),
         if is_en { "New Profile" } else { "Profil Baru" },
     )
     .build(&app)
     .map_err(|e| e.to_string())?;
 
     let sep = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
-    let ephem_item = MenuItemBuilder::with_id("new-tab:ephemeral", "Ephemeral")
+    let ephem_item = MenuItemBuilder::with_id(format!("new-tab:ephemeral:{win_label}"), "Ephemeral")
         .build(&app)
         .map_err(|e| e.to_string())?;
 
@@ -789,32 +990,50 @@ pub async fn show_new_tab_menu(
 }
 
 #[tauri::command]
-pub async fn show_app_menu(app: AppHandle<tauri::Wry>, x: f64, y: f64) -> Result<(), String> {
+pub async fn show_app_menu(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(&win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
     let is_en = app.state::<AppState>().preferences.lock().unwrap().language == Language::En;
 
+    let new_win_item = MenuItemBuilder::with_id(
+        "menu:new-window",
+        if is_en { "New Window (Ctrl+N)" } else { "Window Baru (Ctrl+N)" },
+    )
+    .build(&app)
+    .map_err(|e| e.to_string())?;
     let profile_mgr_item = MenuItemBuilder::with_id(
-        "menu:profile-manager",
+        format!("menu:profile-manager:{win_label}"),
         if is_en { "Profile Manager" } else { "Kelola Profil" },
     )
     .build(&app)
     .map_err(|e| e.to_string())?;
     let download_mgr_item = MenuItemBuilder::with_id(
-        "menu:download-panel",
+        format!("menu:download-panel:{win_label}"),
         if is_en { "Downloads" } else { "Unduhan" },
     )
     .build(&app)
     .map_err(|e| e.to_string())?;
-    let monitor_item = MenuItemBuilder::with_id("menu:task-monitor", "Task Monitor")
-        .build(&app)
-        .map_err(|e| e.to_string())?;
-    let devtools_item = MenuItemBuilder::with_id("menu:devtools", "DevTools (F12)")
-        .build(&app)
-        .map_err(|e| e.to_string())?;
+    let monitor_item = MenuItemBuilder::with_id(
+        format!("menu:task-monitor:{win_label}"),
+        "Task Monitor",
+    )
+    .build(&app)
+    .map_err(|e| e.to_string())?;
+    let devtools_item = MenuItemBuilder::with_id(
+        format!("menu:devtools:{win_label}"),
+        "DevTools (F12)",
+    )
+    .build(&app)
+    .map_err(|e| e.to_string())?;
     let about_item = MenuItemBuilder::with_id(
-        "menu:about",
+        format!("menu:about:{win_label}"),
         if is_en {
             "About & Updates"
         } else {
@@ -825,7 +1044,7 @@ pub async fn show_app_menu(app: AppHandle<tauri::Wry>, x: f64, y: f64) -> Result
     .map_err(|e| e.to_string())?;
     let sep = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
     let ephem_item = MenuItemBuilder::with_id(
-        "new-tab:ephemeral",
+        format!("new-tab:ephemeral:{win_label}"),
         if is_en {
             "New Ephemeral Tab (Ctrl+Shift+N)"
         } else {
@@ -837,6 +1056,7 @@ pub async fn show_app_menu(app: AppHandle<tauri::Wry>, x: f64, y: f64) -> Result
 
     let menu = MenuBuilder::new(&app)
         .items(&[
+            &new_win_item,
             &profile_mgr_item,
             &download_mgr_item,
             &monitor_item,
@@ -858,22 +1078,35 @@ pub async fn show_app_menu(app: AppHandle<tauri::Wry>, x: f64, y: f64) -> Result
 #[tauri::command]
 pub async fn show_tab_context_menu(
     app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
     tab_id: String,
     x: f64,
     y: f64,
 ) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(&win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
 
-    let (is_active, is_sleeping, is_pinned, tab_count, profiles, is_en) = {
+    let (is_active, is_sleeping, is_pinned, win_tab_count, other_windows, profiles, is_en) = {
         let state = app.state::<AppState>();
-        let active_id = state.active_tab_id.lock().unwrap().clone();
+        let active_id = state.active_tab_for(&win_label);
         let tabs = state.tabs.lock().unwrap();
         let tab = tabs
             .iter()
             .find(|t| t.id == tab_id)
             .ok_or_else(|| "Tab tidak ditemukan".to_string())?;
+        let win_count = tabs
+            .iter()
+            .filter(|t| t.window_label == tab.window_label)
+            .count();
+        let other_wins: Vec<(String, String)> = state
+            .window_labels()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, w)| w != &tab.window_label)
+            .map(|(i, w)| (w, format!("Window {}", i + 1)))
+            .collect();
         let prefs = state.preferences.lock().unwrap().clone();
         let profs = sync_profiles_store(
             &state.profiles_dir,
@@ -885,17 +1118,24 @@ pub async fn show_tab_context_menu(
             active_id.as_deref() == Some(tab_id.as_str()),
             tab.is_sleeping,
             tab.is_pinned,
-            tabs.len(),
+            win_count,
+            other_wins,
             profs,
             prefs.language == Language::En,
         )
     };
 
-    let dup_same = MenuItemBuilder::with_id(format!("ctx-dup-same:{tab_id}"), "Duplikat Tab")
-        .build(&app)
-        .map_err(|e| e.to_string())?;
+    let dup_same = MenuItemBuilder::with_id(
+        format!("ctx-dup-same:{tab_id}"),
+        if is_en { "Duplicate Tab" } else { "Duplikat Tab" },
+    )
+    .build(&app)
+    .map_err(|e| e.to_string())?;
 
-    let mut dup_sub = SubmenuBuilder::new(&app, "Duplikat ke Profil");
+    let mut dup_sub = SubmenuBuilder::new(
+        &app,
+        if is_en { "Duplicate to Profile" } else { "Duplikat ke Profil" },
+    );
     for prof in &profiles {
         let item =
             MenuItemBuilder::with_id(format!("ctx-dup-profile:{tab_id}:{}", prof.id), &prof.name)
@@ -910,6 +1150,33 @@ pub async fn show_tab_context_menu(
         .item(&dup_ephem)
         .build()
         .map_err(|e| e.to_string())?;
+
+    let detach_item = MenuItemBuilder::with_id(
+        format!("ctx-detach:{tab_id}"),
+        if is_en { "Move to New Window" } else { "Pisah ke Window Baru" },
+    )
+    .enabled(win_tab_count > 1)
+    .build(&app)
+    .map_err(|e| e.to_string())?;
+
+    let move_win_submenu = if !other_windows.is_empty() {
+        let mut move_sub = SubmenuBuilder::new(
+            &app,
+            if is_en { "Move to Window" } else { "Pindah ke Window" },
+        );
+        for (target_lbl, target_title) in &other_windows {
+            let item = MenuItemBuilder::with_id(
+                format!("ctx-move-win:{tab_id}:{target_lbl}"),
+                target_title,
+            )
+            .build(&app)
+            .map_err(|e| e.to_string())?;
+            move_sub = move_sub.item(&item);
+        }
+        Some(move_sub.build().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
 
     let pin_label = if is_pinned {
         if is_en { "Unpin Tab" } else { "Lepas Pin" }
@@ -929,24 +1196,33 @@ pub async fn show_tab_context_menu(
 
     let sep = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
 
-    let close_item = MenuItemBuilder::with_id(format!("ctx-close:{tab_id}"), "Tutup Tab")
-        .build(&app)
-        .map_err(|e| e.to_string())?;
-    let close_others = MenuItemBuilder::with_id(format!("ctx-close-others:{tab_id}"), "Tutup Tab Lainnya")
-        .enabled(tab_count > 1)
-        .build(&app)
-        .map_err(|e| e.to_string())?;
+    let close_item = MenuItemBuilder::with_id(
+        format!("ctx-close:{tab_id}"),
+        if is_en { "Close Tab" } else { "Tutup Tab" },
+    )
+    .build(&app)
+    .map_err(|e| e.to_string())?;
+    let close_others = MenuItemBuilder::with_id(
+        format!("ctx-close-others:{tab_id}"),
+        if is_en { "Close Other Tabs" } else { "Tutup Tab Lainnya" },
+    )
+    .enabled(win_tab_count > 1)
+    .build(&app)
+    .map_err(|e| e.to_string())?;
 
-    let menu = MenuBuilder::new(&app)
-        .items(&[
-            &dup_same,
-            &dup_submenu,
-            &pin_item,
-            &sleep_item,
-            &sep,
-            &close_item,
-            &close_others,
-        ])
+    let mut menu_builder = MenuBuilder::new(&app)
+        .item(&dup_same)
+        .item(&dup_submenu)
+        .item(&detach_item);
+    if let Some(ref move_sub) = move_win_submenu {
+        menu_builder = menu_builder.item(move_sub);
+    }
+    let menu = menu_builder
+        .item(&pin_item)
+        .item(&sleep_item)
+        .item(&sep)
+        .item(&close_item)
+        .item(&close_others)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -957,10 +1233,14 @@ pub async fn show_tab_context_menu(
 }
 
 #[tauri::command]
-pub async fn show_tab_overflow_menu(app: AppHandle<tauri::Wry>) -> Result<(), String> {
+pub async fn show_tab_overflow_menu(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(&win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let logical_w = window
         .inner_size()
@@ -968,7 +1248,15 @@ pub async fn show_tab_overflow_menu(app: AppHandle<tauri::Wry>) -> Result<(), St
         .to_logical::<f64>(scale)
         .width;
 
-    let tabs = app.state::<AppState>().tabs.lock().unwrap().clone();
+    let tabs: Vec<TabEntry> = app
+        .state::<AppState>()
+        .tabs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|t| t.window_label == win_label)
+        .cloned()
+        .collect();
     let mut builder = MenuBuilder::new(&app);
     for tab in tabs {
         let role = if tab.is_ephemeral {
@@ -995,8 +1283,12 @@ pub async fn show_tab_overflow_menu(app: AppHandle<tauri::Wry>) -> Result<(), St
 }
 
 #[tauri::command]
-pub async fn open_active_devtools(app: AppHandle<tauri::Wry>) -> Result<(), String> {
-    if let Some(id) = app.state::<AppState>().active_tab_id.lock().unwrap().clone() {
+pub async fn open_active_devtools(
+    app: AppHandle<tauri::Wry>,
+    webview: tauri::Webview<tauri::Wry>,
+) -> Result<(), String> {
+    let win_label = window_label_from_webview_label(webview.label());
+    if let Some(id) = app.state::<AppState>().active_tab_for(&win_label) {
         if let Some(wv) = app.get_webview(&id) {
             wv.open_devtools();
         }

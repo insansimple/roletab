@@ -660,6 +660,7 @@ mod tests {
 
         let tabs = vec![TabEntry {
             id: "t1".into(),
+            window_label: "main".into(),
             profile_id: rec.id.clone(),
             profile_key: "Admin".into(),
             profile_color: "#b91c1c".into(),

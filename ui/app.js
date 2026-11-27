@@ -28,6 +28,7 @@
   let cachedAppInfo = null;
   let lastUpdateCheck = null;
   let updateProgress = null;
+  let lastFocusedBeforeModal = null;
   const RELEASES_URL = 'https://github.com/insansimple/roletab/releases/latest';
   const mediaDark = window.matchMedia('(prefers-color-scheme: dark)');
 
@@ -36,10 +37,26 @@
     return (window.ROLETAB_I18N[lang] || window.ROLETAB_I18N.id)[key] || key;
   }
 
+  function announceSr(text) {
+    const el = document.getElementById('srAnnouncer');
+    if (el && text) {
+      el.textContent = text;
+    }
+  }
+
   function applyTheme() {
     const mode = currentState.preferences?.theme || 'system';
     const resolved = mode === 'system' ? (mediaDark.matches ? 'dark' : 'light') : mode;
     document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-density', currentState.preferences?.uiDensity || 'comfortable');
+    const accent = currentState.preferences?.accentColor;
+    if (accent) {
+      document.documentElement.style.setProperty('--accent-focus', accent);
+      document.documentElement.style.setProperty('--primary-btn', accent);
+    } else {
+      document.documentElement.style.removeProperty('--accent-focus');
+      document.documentElement.style.removeProperty('--primary-btn');
+    }
 
     const themeIcon = document.getElementById('themeIcon');
     if (mode === 'dark') themeIcon.className = 'fa-solid fa-moon';
@@ -50,6 +67,11 @@
   function applyStaticTranslations() {
     const lang = currentState.preferences?.language || 'id';
     document.documentElement.lang = lang;
+
+    const tabsNav = document.getElementById('tabs');
+    if (tabsNav) tabsNav.setAttribute('aria-label', t('windowTabsAria'));
+    const navBar = document.getElementById('navToolbar');
+    if (navBar) navBar.setAttribute('aria-label', t('navToolbarAria'));
 
     const setAriaTitle = (id, ariaKey, titleKey = ariaKey) => {
       const el = document.getElementById(id);
@@ -216,7 +238,7 @@
 
   function clearTabDropIndicators() {
     document.querySelectorAll('#tabs .tab').forEach((node) => {
-      node.classList.remove('drag-over', 'drag-over-right');
+      node.classList.remove('drag-over', 'drag-over-right', 'detaching');
     });
   }
 
@@ -235,7 +257,9 @@
     });
 
     const startX = startEvent.clientX;
+    const startY = startEvent.clientY;
     let dragging = false;
+    let detaching = false;
     let targetIndex = fromIndex;
     activeDrag = { fromIndex, tabId: el.dataset.tabId, dragging: false };
 
@@ -256,8 +280,9 @@
 
     const onPointerMove = (moveEvent) => {
       const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
       if (!dragging) {
-        if (Math.abs(dx) <= 6) return;
+        if (Math.abs(dx) <= 6 && Math.abs(dy) <= 10) return;
         dragging = true;
         if (activeDrag) activeDrag.dragging = true;
         el.classList.add('dragging');
@@ -266,17 +291,33 @@
           el.setPointerCapture?.(startEvent.pointerId);
         } catch {}
       }
-      el.style.transform = `translateX(${dx}px)`;
-      updateTarget(moveEvent.clientX);
+
+      if (Math.abs(dy) > 42 && tabEls.length >= 2) {
+        if (!detaching) {
+          detaching = true;
+          clearTabDropIndicators();
+          el.classList.add('detaching');
+          el.title = t('tabDetachHint');
+          announceSr(t('tabDetachHint'));
+        }
+        el.style.transform = `translate(${dx}px, ${dy}px)`;
+      } else {
+        if (detaching) {
+          detaching = false;
+          el.classList.remove('detaching');
+        }
+        el.style.transform = `translateX(${dx}px)`;
+        updateTarget(moveEvent.clientX);
+      }
     };
 
-    const finishDrag = async (commit) => {
+    const finishDrag = async (commit, endEvent) => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerCancel);
       activeDrag = null;
       document.body.style.userSelect = '';
-      el.classList.remove('dragging');
+      el.classList.remove('dragging', 'detaching');
       el.style.transform = '';
       clearTabDropIndicators();
       try {
@@ -288,14 +329,20 @@
       if (dragging) {
         suppressTabClick = true;
         setTimeout(() => { suppressTabClick = false; }, 0);
-        if (commit && targetIndex !== fromIndex) {
+        if (commit && detaching && endEvent) {
+          await invoke('drop_tab_at_screen_point', {
+            tabId: el.dataset.tabId,
+            screenX: Math.round(endEvent.screenX),
+            screenY: Math.round(endEvent.screenY)
+          }).catch(() => {});
+        } else if (commit && targetIndex !== fromIndex) {
           await invoke('reorder_tab', { fromIndex, toIndex: targetIndex });
         }
       }
     };
 
-    const onPointerUp = () => { void finishDrag(true); };
-    const onPointerCancel = () => { void finishDrag(false); };
+    const onPointerUp = (ev) => { void finishDrag(true, ev); };
+    const onPointerCancel = (ev) => { void finishDrag(false, ev); };
 
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
@@ -326,17 +373,29 @@
     });
     el.addEventListener('keydown', (e) => {
       const curIdx = Number(el.dataset.tabIndex);
+      const count = currentState.tabs.length;
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         switchTab(el.dataset.tabId);
-      } else if (e.key === 'ArrowRight' && currentState.tabs.length > 1) {
+      } else if (e.key === 'ArrowRight' && count > 1) {
         e.preventDefault();
-        const next = currentState.tabs[(curIdx + 1) % currentState.tabs.length];
-        switchTab(next.id);
-      } else if (e.key === 'ArrowLeft' && currentState.tabs.length > 1) {
+        const nextIdx = (curIdx + 1) % count;
+        switchTab(currentState.tabs[nextIdx].id);
+        document.getElementById('tabs')?.children[nextIdx]?.focus();
+      } else if (e.key === 'ArrowLeft' && count > 1) {
         e.preventDefault();
-        const prev = currentState.tabs[(curIdx - 1 + currentState.tabs.length) % currentState.tabs.length];
-        switchTab(prev.id);
+        const prevIdx = (curIdx - 1 + count) % count;
+        switchTab(currentState.tabs[prevIdx].id);
+        document.getElementById('tabs')?.children[prevIdx]?.focus();
+      } else if (e.key === 'Home' && count > 0) {
+        e.preventDefault();
+        switchTab(currentState.tabs[0].id);
+        document.getElementById('tabs')?.children[0]?.focus();
+      } else if (e.key === 'End' && count > 0) {
+        e.preventDefault();
+        const lastIdx = count - 1;
+        switchTab(currentState.tabs[lastIdx].id);
+        document.getElementById('tabs')?.children[lastIdx]?.focus();
       }
     });
     el.addEventListener('auxclick', (e) => {
@@ -568,6 +627,8 @@
   }
 
   async function switchTab(tabId) {
+    const target = currentState.tabs.find(t => t.id === tabId);
+    if (target) announceSr(`${target.profileKey} | ${target.title || t('tabDefault')}`);
     await invoke('switch_tab', { tabId });
   }
 
@@ -684,6 +745,7 @@
   }
 
   async function openNewProfileModal() {
+    lastFocusedBeforeModal = document.activeElement;
     const backdrop = document.getElementById('profileModalBackdrop');
     const input = document.getElementById('newProfileNameInput');
     const err = document.getElementById('newProfileError');
@@ -711,6 +773,9 @@
     backdrop.hidden = true;
     document.body.classList.remove('modal-open');
     await invoke('set_shell_overlay_open', { open: false });
+    if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === 'function') {
+      lastFocusedBeforeModal.focus();
+    }
   }
 
   function formatUpdateBytes(bytes) {
@@ -884,6 +949,7 @@
   }
 
   async function openAboutModal() {
+    lastFocusedBeforeModal = document.activeElement;
     document.getElementById('profileModalBackdrop').hidden = true;
     const backdrop = document.getElementById('aboutModalBackdrop');
     document.body.classList.add('modal-open');
@@ -895,6 +961,7 @@
     if (currentWebview && !document.hasFocus()) {
       await currentWebview.setFocus().catch(() => {});
     }
+    document.getElementById('closeAboutModalBtn')?.focus();
     if (!lastUpdateCheck && !updateProgress) {
       void checkForUpdatesNow();
     }
@@ -904,6 +971,9 @@
     document.getElementById('aboutModalBackdrop').hidden = true;
     document.body.classList.remove('modal-open');
     await invoke('set_shell_overlay_open', { open: false });
+    if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === 'function') {
+      lastFocusedBeforeModal.focus();
+    }
   }
 
   async function checkForUpdatesNow() {
@@ -1014,6 +1084,7 @@
 
   async function handleShortcut(action) {
     if (action === 'new_tab') return openTabWithActiveRole();
+    if (action === 'new_window') return invoke('create_window', {});
     if (action === 'new_ephemeral_tab') return openTab('ephemeral', true);
     if (action === 'close_tab' && currentState.activeTabId) return closeTab(currentState.activeTabId);
     if (action === 'reload_tab') return invoke('reload_active_tab');
@@ -1138,8 +1209,31 @@
         closeFindBar();
         return;
       }
+      if (e.key === 'Tab') {
+        const openModal = !document.getElementById('profileModalBackdrop').hidden
+          ? document.getElementById('profileModalBackdrop')
+          : (!document.getElementById('aboutModalBackdrop').hidden ? document.getElementById('aboutModalBackdrop') : null);
+        if (openModal) {
+          const focusables = Array.from(openModal.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden])'))
+            .filter(node => node.offsetParent !== null);
+          if (focusables.length > 0) {
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+              e.preventDefault();
+              last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+              e.preventDefault();
+              first.focus();
+            }
+          }
+          return;
+        }
+      }
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault(); handleShortcut('new_ephemeral_tab');
+      } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault(); handleShortcut('new_window');
       } else if (e.ctrlKey && e.shiftKey && e.key === 'Tab') {
         e.preventDefault(); handleShortcut('prev_tab');
       } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 't') {

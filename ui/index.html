@@ -51,6 +51,15 @@
     body.find-open .shell {
       height: 116px;
     }
+    html[data-density="compact"],
+    html[data-density="compact"] body,
+    html[data-density="compact"] .shell {
+      height: 66px;
+    }
+    html[data-density="compact"] body.find-open,
+    html[data-density="compact"] body.find-open .shell {
+      height: 104px;
+    }
     body.modal-open,
     body.crash-open {
       height: 100vh;
@@ -60,6 +69,17 @@
       flex-direction: column;
       height: 78px;
       width: 100%;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
     button:focus-visible,
     .tab:focus-visible,
@@ -75,6 +95,19 @@
       padding: 4px 8px 0 8px;
       background: var(--frame-bg);
       gap: 4px;
+    }
+    html[data-density="compact"] .tab-strip {
+      height: 30px;
+      padding: 3px 6px 0 6px;
+    }
+    html[data-density="compact"] .tab {
+      height: 27px;
+      font-size: 11.5px;
+    }
+    .tab.detaching {
+      opacity: 0.85;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+      border: 1px dashed var(--accent-focus);
     }
     .strip-icon-btn.profile-mgr-btn {
       color: var(--accent-focus);
@@ -236,6 +269,13 @@
       padding: 0 10px;
       background: var(--toolbar-bg);
       border-bottom: 1px solid var(--border-subtle);
+    }
+    html[data-density="compact"] .toolbar {
+      height: 36px;
+      padding: 0 8px;
+    }
+    html[data-density="compact"] .omnibox {
+      height: 26px;
     }
     .nav-btn {
       width: 30px;
@@ -708,7 +748,8 @@
   </style>
 </head>
 <body>
-  <div class="shell">
+  <div id="srAnnouncer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  <header class="shell" role="banner">
     <div class="tab-strip">
       <button type="button" class="strip-icon-btn profile-mgr-btn" id="profileMgrBtn">
         <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
@@ -723,7 +764,7 @@
       </button>
     </div>
 
-    <div class="toolbar">
+    <nav class="toolbar" id="navToolbar" aria-label="Kontrol Navigasi">
       <button type="button" class="nav-btn" id="backBtn">
         <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
       </button>
@@ -773,7 +814,7 @@
           <i class="fa-solid fa-bars" aria-hidden="true"></i>
         </button>
       </div>
-    </div>
+    </nav>
 
     <div class="find-bar" id="findBar" hidden>
       <div class="find-box">
@@ -791,7 +832,7 @@
         <i class="fa-solid fa-xmark" aria-hidden="true"></i>
       </button>
     </div>
-  </div>
+  </header>
 
   <div class="modal-backdrop" id="profileModalBackdrop" hidden>
     <form class="modal-card" id="newProfileForm" novalidate>

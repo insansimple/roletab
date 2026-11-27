@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod platform;
 
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
@@ -9,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::webview::{DownloadEvent, NewWindowFeatures, NewWindowResponse, WebviewBuilder};
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, Runtime, WebviewUrl,
-    WebviewWindowBuilder,
+    WebviewWindowBuilder, WindowBuilder, WindowEvent,
 };
 use uuid::Uuid;
 
@@ -19,23 +20,37 @@ use crate::profile::{
     profile_data_dir, sync_profiles_store, touch_profile_last_used, EPHEMERAL_BADGE_COLOR,
 };
 use crate::profile_transfer::export_profile_dir_to_zip;
-use crate::state::{AppState, DownloadEntry, DownloadStatus, TabCrashKind, TabEntry};
+use crate::state::{AppState, DownloadEntry, DownloadStatus, TabCrashKind, TabEntry, UiDensity};
 use crate::workspace::load_workspaces;
 use bridge::NativeNavState;
+use platform::PlatformWebviewController;
 
-/// Compact 2-row Chrome-like UI Shell height (36px Tab Strip + 42px Navigation Toolbar).
+/// Compact 2-row Chrome-like UI Shell height in Comfortable mode (36px Tab Strip + 42px Toolbar).
 pub const UI_SHELL_HEIGHT: f64 = 78.0;
 
-/// UI Shell height when Find-in-Page floating bar (`Ctrl+F`) is docked beneath the toolbar.
+/// UI Shell height when Find-in-Page floating bar (`Ctrl+F`) is docked beneath Comfortable toolbar.
 pub const UI_SHELL_FIND_HEIGHT: f64 = 116.0;
 
-/// Returns effective logical UI Shell height based on Find-in-Page visibility.
-pub fn shell_height_for_find(find_open: bool) -> f64 {
-    if find_open {
-        UI_SHELL_FIND_HEIGHT
-    } else {
-        UI_SHELL_HEIGHT
+/// Compact density UI Shell height (30px Tab Strip + 36px Toolbar).
+pub const UI_SHELL_COMPACT_HEIGHT: f64 = 66.0;
+
+/// Compact density UI Shell height with docked Find-in-Page bar.
+pub const UI_SHELL_COMPACT_FIND_HEIGHT: f64 = 104.0;
+
+/// Returns effective logical UI Shell height based on Find-in-Page visibility and UI density.
+pub fn shell_height_for_prefs(find_open: bool, density: UiDensity) -> f64 {
+    match (density, find_open) {
+        (UiDensity::Compact, true) => UI_SHELL_COMPACT_FIND_HEIGHT,
+        (UiDensity::Compact, false) => UI_SHELL_COMPACT_HEIGHT,
+        (UiDensity::Comfortable, true) => UI_SHELL_FIND_HEIGHT,
+        (UiDensity::Comfortable, false) => UI_SHELL_HEIGHT,
     }
+}
+
+/// Returns effective logical UI Shell height in default Comfortable density.
+#[cfg(test)]
+pub fn shell_height_for_find(find_open: bool) -> f64 {
+    shell_height_for_prefs(find_open, UiDensity::Comfortable)
 }
 
 /// Logical width of the Profile Manager side panel when open.
@@ -51,6 +66,7 @@ pub const MONITOR_PANEL_WIDTH: f64 = 360.0;
 pub const DEFAULT_NEW_TAB_URL: &str = "about:blank";
 
 static POPUP_COUNTER: AtomicU64 = AtomicU64::new(1);
+static WINDOW_COUNTER: AtomicU64 = AtomicU64::new(2);
 static PANEL_ANIM_GEN: AtomicU64 = AtomicU64::new(1);
 static DOWNLOAD_ANIM_GEN: AtomicU64 = AtomicU64::new(1);
 static MONITOR_ANIM_GEN: AtomicU64 = AtomicU64::new(1);
@@ -176,6 +192,7 @@ pub fn compute_physical_side_layout_rects_with_shell(
 
 /// Computes exact physical pixel `Rect`s for `(ui_shell, optional_side_panel, content_viewport)`
 /// from the parent window's physical `inner_size` and `scale_factor`.
+#[cfg(test)]
 pub fn compute_physical_side_layout_rects(
     window_width: u32,
     window_height: u32,
@@ -235,6 +252,7 @@ pub fn compute_right_panel_step_rect_with_shell(
 }
 
 /// Computes `(pos, size)` in physical pixels for a right floating drawer at `visible_width`.
+#[cfg(test)]
 pub fn compute_right_panel_step_rect(
     window_width: u32,
     window_height: u32,
@@ -254,6 +272,7 @@ pub fn compute_right_panel_step_rect(
 
 /// Computes exact physical pixel `Rect`s for `(ui_shell, content_viewport)` from the parent window's
 /// physical `inner_size` and `scale_factor`, avoiding logical/physical DPI round-trip mismatches in WebView2.
+#[cfg(test)]
 pub fn compute_physical_layout_rects(
     window_width: u32,
     window_height: u32,
@@ -305,7 +324,69 @@ pub fn normalize_address_input(raw: &str) -> Result<url::Url, String> {
         .map_err(|e| format!("URL tidak valid: {e}"))
 }
 
+/// Returns the `ui-shell` child webview label belonging to `win_label`.
+pub fn shell_label_for_window(win_label: &str) -> String {
+    if win_label == "main" || win_label.is_empty() {
+        "ui-shell".to_string()
+    } else {
+        format!("ui-shell--{win_label}")
+    }
+}
+
+/// Returns the child panel webview label (`profile-panel`, `download-panel`, `task-monitor`) for `win_label`.
+pub fn panel_label_for_window(base: &str, win_label: &str) -> String {
+    if win_label == "main" || win_label.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}--{win_label}")
+    }
+}
+
+/// Resolves owning window label (`main`, `main-2`, ...) from a child shell/panel webview label.
+pub fn window_label_from_webview_label(wv_label: &str) -> String {
+    wv_label
+        .split_once("--")
+        .map(|(_, win)| win.to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main".to_string())
+}
+
+/// Resolves the `ui-shell` child label currently hosting `tab_id`.
+pub fn shell_label_for_tab<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> String {
+    let win_label = app
+        .state::<AppState>()
+        .tab_window_label(tab_id)
+        .unwrap_or_else(|| "main".to_string());
+    shell_label_for_window(&win_label)
+}
+
+/// Reorders tabs belonging strictly to `win_label` without disturbing tabs in other windows.
+pub fn reorder_window_tabs_vec(
+    tabs: &mut [TabEntry],
+    win_label: &str,
+    from_idx: usize,
+    to_idx: usize,
+) -> bool {
+    let positions: Vec<usize> = tabs
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.window_label == win_label)
+        .map(|(i, _)| i)
+        .collect();
+    if from_idx >= positions.len() || to_idx >= positions.len() || from_idx == to_idx {
+        return false;
+    }
+    let mut win_tabs: Vec<TabEntry> = positions.iter().map(|&i| tabs[i].clone()).collect();
+    let item = win_tabs.remove(from_idx);
+    win_tabs.insert(to_idx, item);
+    for (slot_idx, orig_pos) in positions.into_iter().enumerate() {
+        tabs[orig_pos] = win_tabs[slot_idx].clone();
+    }
+    true
+}
+
 /// Reorders a slice of tabs safely when dragging a tab from `from_idx` to `to_idx`.
+#[cfg(test)]
 pub fn reorder_tabs_vec<T>(tabs: &mut Vec<T>, from_idx: usize, to_idx: usize) -> bool {
     if from_idx >= tabs.len() || to_idx >= tabs.len() || from_idx == to_idx {
         return false;
@@ -323,16 +404,17 @@ pub fn is_popup_features(features: &NewWindowFeatures) -> bool {
 
 pub fn emit_shell_state<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<AppState>();
-    let snapshot = state.snapshot();
-    let _ = app.emit_to("ui-shell", "shell-state", &snapshot);
-    if app.get_webview("profile-panel").is_some() {
-        let _ = app.emit_to("profile-panel", "shell-state", &snapshot);
-    }
-    if app.get_webview("download-panel").is_some() {
-        let _ = app.emit_to("download-panel", "shell-state", &snapshot);
-    }
-    if app.get_webview("task-monitor").is_some() {
-        let _ = app.emit_to("task-monitor", "shell-state", &snapshot);
+    let win_labels = state.window_labels();
+    for win_label in win_labels {
+        let snapshot = state.snapshot_for_window(&win_label);
+        let shell_lbl = shell_label_for_window(&win_label);
+        let _ = app.emit_to(&shell_lbl, "shell-state", &snapshot);
+        for base in ["profile-panel", "download-panel", "task-monitor"] {
+            let panel_lbl = panel_label_for_window(base, &win_label);
+            if app.get_webview(&panel_lbl).is_some() {
+                let _ = app.emit_to(&panel_lbl, "shell-state", &snapshot);
+            }
+        }
     }
 }
 
@@ -382,7 +464,7 @@ pub fn apply_native_nav_update<R: Runtime>(app: &AppHandle<R>, update: NativeNav
             if let Some(pid) = update.browser_pid {
                 if tab.browser_pid != Some(pid) {
                     tab.browser_pid = Some(pid);
-                    if let Some(mb) = bridge::read_process_working_set_mb(pid) {
+                    if let Some(mb) = platform::ACTIVE_CONTROLLER.read_process_memory_mb(pid) {
                         tab.memory_mb = Some(mb);
                     }
                     changed = true;
@@ -402,11 +484,10 @@ pub fn apply_native_nav_update<R: Runtime>(app: &AppHandle<R>, update: NativeNav
 }
 
 /// Marks a tab (or all tabs sharing a profile when `BrowserProcessExited`) as crashed
-/// and refreshes layout so `ui-shell` renders the crash recovery overlay without disturbing other tabs.
+/// and refreshes layout so each affected window renders crash recovery without disturbing other tabs.
 pub fn apply_process_failed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, kind: TabCrashKind) {
     let state = app.state::<AppState>();
-    let affected_active = {
-        let active_id = state.active_tab_id.lock().unwrap().clone();
+    let affected_windows: Vec<String> = {
         let mut tabs = state.tabs.lock().unwrap();
         let target_prof = tabs
             .iter()
@@ -417,6 +498,7 @@ pub fn apply_process_failed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, kind: 
             return;
         };
 
+        let mut wins = HashSet::new();
         for tab in tabs.iter_mut() {
             let matches = if kind == TabCrashKind::BrowserProcessExited && !is_eph {
                 !tab.is_ephemeral && tab.profile_id == prof_id
@@ -428,17 +510,14 @@ pub fn apply_process_failed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, kind: 
                 tab.is_loading = false;
                 tab.is_sleeping = false;
                 tab.is_playing_audio = false;
+                wins.insert(tab.window_label.clone());
             }
         }
-        active_id
-            .as_deref()
-            .and_then(|aid| tabs.iter().find(|t| t.id == aid))
-            .map(|t| t.crash_kind.is_some())
-            .unwrap_or(false)
+        wins.into_iter().collect()
     };
 
-    if affected_active {
-        sync_bounds_on_resize(app);
+    for win in affected_windows {
+        sync_bounds_on_resize_for_window(app, &win);
     }
     emit_shell_state(app);
 }
@@ -488,31 +567,40 @@ pub fn compute_full_window_rect(window_width: u32, window_height: u32) -> Rect {
     }
 }
 
-pub fn current_viewport_rect<R: Runtime>(app: &AppHandle<R>) -> Result<Rect, String> {
+pub fn current_viewport_rect_for_window<R: Runtime>(
+    app: &AppHandle<R>,
+    win_label: &str,
+) -> Result<Rect, String> {
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let physical = window.inner_size().map_err(|e| e.to_string())?;
     let state = app.state::<AppState>();
-    let side_open = *state.profile_panel_open.lock().unwrap();
-    let shell_h = shell_height_for_find(*state.find_bar_open.lock().unwrap());
+    let win_ui = state.window_state(win_label);
+    let density = state.preferences.lock().unwrap().ui_density;
+    let shell_h = shell_height_for_prefs(win_ui.find_bar_open, density);
     let (_, _, viewport_rect) = compute_physical_side_layout_rects_with_shell(
         physical.width,
         physical.height,
         scale,
-        side_open,
+        win_ui.profile_panel_open,
         shell_h,
     );
     Ok(viewport_rect)
 }
 
-/// Updates bounds for `ui-shell`, optional `profile-panel`, and active content child webview.
-pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height: u32) {
+/// Updates bounds for `ui-shell`, optional drawers, and active content child webview in `win_label`.
+pub fn sync_bounds_with_size_for_window<R: Runtime>(
+    app: &AppHandle<R>,
+    win_label: &str,
+    width: u32,
+    height: u32,
+) {
     if width == 0 || height == 0 {
         return;
     }
-    let Some(window) = app.get_window("main") else {
+    let Some(window) = app.get_window(win_label) else {
         return;
     };
     let Ok(scale) = window.scale_factor() else {
@@ -520,12 +608,10 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
     };
 
     let state = app.state::<AppState>();
-    let overlay_open = *state.shell_overlay_open.lock().unwrap();
-    let side_open = *state.profile_panel_open.lock().unwrap();
-    let download_open = *state.download_panel_open.lock().unwrap();
-    let monitor_open = *state.monitor_panel_open.lock().unwrap();
-    let shell_h = shell_height_for_find(*state.find_bar_open.lock().unwrap());
-    let active_id = state.active_tab_id.lock().unwrap().clone();
+    let win_ui = state.window_state(win_label);
+    let density = state.preferences.lock().unwrap().ui_density;
+    let shell_h = shell_height_for_prefs(win_ui.find_bar_open, density);
+    let active_id = win_ui.active_tab_id.clone();
     let active_crashed = active_id
         .as_deref()
         .map(|aid| {
@@ -541,12 +627,13 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
         width,
         height,
         scale,
-        side_open,
+        win_ui.profile_panel_open,
         shell_h,
     );
 
-    if let Some(shell) = app.get_webview("ui-shell") {
-        let target_shell = if overlay_open || active_crashed {
+    let shell_lbl = shell_label_for_window(win_label);
+    if let Some(shell) = app.get_webview(&shell_lbl) {
+        let target_shell = if win_ui.shell_overlay_open || active_crashed {
             compute_full_window_rect(width, height)
         } else {
             shell_rect
@@ -555,11 +642,11 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
     }
 
     let active_wv = active_id.as_deref().and_then(|id| app.get_webview(id));
-    let panel_wv = app.get_webview("profile-panel");
-    let download_wv = app.get_webview("download-panel");
-    let monitor_wv = app.get_webview("task-monitor");
+    let panel_wv = app.get_webview(&panel_label_for_window("profile-panel", win_label));
+    let download_wv = app.get_webview(&panel_label_for_window("download-panel", win_label));
+    let monitor_wv = app.get_webview(&panel_label_for_window("task-monitor", win_label));
 
-    if overlay_open {
+    if win_ui.shell_overlay_open {
         if let Some(pw) = panel_wv {
             let _ = pw.hide();
         }
@@ -583,7 +670,7 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
         (viewport_rect.position, viewport_rect.size)
     {
         if let Some(wv) = active_wv {
-            let _ = bridge::set_bounds_sync_native(&wv, vp_pos, vp_sz, false, true);
+            let _ = platform::ACTIVE_CONTROLLER.set_bounds_sync(&wv, vp_pos, vp_sz, false, true);
         }
     }
 
@@ -592,7 +679,8 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
             if let (tauri::Position::Physical(sd_pos), tauri::Size::Physical(sd_sz)) =
                 (sr.position, sr.size)
             {
-                let _ = bridge::set_bounds_sync_native(&pw, sd_pos, sd_sz, true, true);
+                let _ =
+                    platform::ACTIVE_CONTROLLER.set_bounds_sync(&pw, sd_pos, sd_sz, true, true);
             }
         } else {
             let _ = pw.hide();
@@ -600,8 +688,8 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
     }
 
     for (wv_opt, is_open, logical_w) in [
-        (download_wv, download_open, DOWNLOAD_PANEL_WIDTH),
-        (monitor_wv, monitor_open, MONITOR_PANEL_WIDTH),
+        (download_wv, win_ui.download_panel_open, DOWNLOAD_PANEL_WIDTH),
+        (monitor_wv, win_ui.monitor_panel_open, MONITOR_PANEL_WIDTH),
     ] {
         if let Some(dw) = wv_opt {
             let vis_w = if is_open {
@@ -617,7 +705,7 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
                 vis_w,
                 shell_h,
             ) {
-                let _ = bridge::set_bounds_sync_native(&dw, dp_pos, dp_sz, true, true);
+                let _ = platform::ACTIVE_CONTROLLER.set_bounds_sync(&dw, dp_pos, dp_sz, true, true);
             } else {
                 let _ = dw.hide();
             }
@@ -625,8 +713,8 @@ pub fn sync_bounds_with_size<R: Runtime>(app: &AppHandle<R>, width: u32, height:
     }
 }
 
-fn apply_slide_frame<R: Runtime>(app: &AppHandle<R>, visible_side_width: u32) {
-    let Some(window) = app.get_window("main") else {
+fn apply_slide_frame<R: Runtime>(app: &AppHandle<R>, win_label: &str, visible_side_width: u32) {
+    let Some(window) = app.get_window(win_label) else {
         return;
     };
     let Ok(scale) = window.scale_factor() else {
@@ -639,7 +727,9 @@ fn apply_slide_frame<R: Runtime>(app: &AppHandle<R>, visible_side_width: u32) {
         return;
     }
 
-    let shell_h = shell_height_for_find(*app.state::<AppState>().find_bar_open.lock().unwrap());
+    let state = app.state::<AppState>();
+    let density = state.preferences.lock().unwrap().ui_density;
+    let shell_h = shell_height_for_prefs(state.window_state(win_label).find_bar_open, density);
     let (side_opt, _) = compute_slide_step_rects_with_shell(
         physical.width,
         physical.height,
@@ -647,22 +737,27 @@ fn apply_slide_frame<R: Runtime>(app: &AppHandle<R>, visible_side_width: u32) {
         visible_side_width,
         shell_h,
     );
-    if let (Some(pw), Some((sd_pos, sd_sz))) = (app.get_webview("profile-panel"), side_opt) {
-        let _ = bridge::set_bounds_sync_native(&pw, sd_pos, sd_sz, true, true);
+    let panel_lbl = panel_label_for_window("profile-panel", win_label);
+    if let (Some(pw), Some((sd_pos, sd_sz))) = (app.get_webview(&panel_lbl), side_opt) {
+        let _ = platform::ACTIVE_CONTROLLER.set_bounds_sync(&pw, sd_pos, sd_sz, true, true);
     }
 }
 
-/// Opens or closes the floating left Profile Manager side panel (`profile-panel` child webview)
-/// with a smooth cubic ease-out slide animation above the full-width browser viewport.
-pub fn set_profile_panel_open_sync<R: Runtime>(
+/// Opens or closes the floating left Profile Manager side panel for `win_label`.
+pub fn set_profile_panel_open_in_window<R: Runtime>(
     app: &AppHandle<R>,
+    win_label: &str,
     open: bool,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    *state.profile_panel_open.lock().unwrap() = open;
+    state.update_window_state(win_label, |w| {
+        w.profile_panel_open = open;
+        if open {
+            w.download_panel_open = false;
+            w.monitor_panel_open = false;
+        }
+    });
     if open {
-        *state.download_panel_open.lock().unwrap() = false;
-        *state.monitor_panel_open.lock().unwrap() = false;
         DOWNLOAD_ANIM_GEN.fetch_add(1, Ordering::Relaxed);
         MONITOR_ANIM_GEN.fetch_add(1, Ordering::Relaxed);
     }
@@ -670,21 +765,29 @@ pub fn set_profile_panel_open_sync<R: Runtime>(
     emit_shell_state(app);
 
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let physical = window.inner_size().map_err(|e| e.to_string())?;
     let target_side_w = compute_target_side_width(physical.width, scale);
+    let panel_lbl = panel_label_for_window("profile-panel", win_label);
+    let density = state.preferences.lock().unwrap().ui_density;
+    let base_shell_h = shell_height_for_prefs(state.window_state(win_label).find_bar_open, density);
 
-    if open && app.get_webview("profile-panel").is_none() {
-        let (_, side_rect, _) =
-            compute_physical_side_layout_rects(physical.width, physical.height, scale, true);
+    if open && app.get_webview(&panel_lbl).is_none() {
+        let (_, side_rect, _) = compute_physical_side_layout_rects_with_shell(
+            physical.width,
+            physical.height,
+            scale,
+            true,
+            base_shell_h,
+        );
         if let Some(sr) = side_rect {
             if let tauri::Size::Physical(sd_sz) = sr.size {
-                let shell_h = ((UI_SHELL_HEIGHT * scale).round() as i32).max(1);
+                let shell_h = ((base_shell_h * scale).round() as i32).max(1);
                 let init_pos = PhysicalPosition::new(-(sd_sz.width as i32), shell_h);
                 let builder = WebviewBuilder::new(
-                    "profile-panel",
+                    &panel_lbl,
                     WebviewUrl::App("profile-panel.html".into()),
                 );
                 let _ = window
@@ -707,7 +810,7 @@ pub fn set_profile_panel_open_sync<R: Runtime>(
         } else {
             (target_side_w as f64 * (1.0 - eased)).round() as u32
         };
-        apply_slide_frame(app, vis_w);
+        apply_slide_frame(app, win_label, vis_w);
         if step < STEPS {
             std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
         }
@@ -717,12 +820,12 @@ pub fn set_profile_panel_open_sync<R: Runtime>(
         return Ok(());
     }
 
-    sync_bounds_on_resize(app);
+    sync_bounds_on_resize_for_window(app, win_label);
     if open {
-        if let Some(panel_wv) = app.get_webview("profile-panel") {
+        if let Some(panel_wv) = app.get_webview(&panel_lbl) {
             let _ = panel_wv.set_focus();
         }
-    } else if let Some(active_id) = state.active_tab_id.lock().unwrap().clone() {
+    } else if let Some(active_id) = state.active_tab_for(win_label) {
         if let Some(wv) = app.get_webview(&active_id) {
             let _ = wv.set_focus();
         }
@@ -733,11 +836,12 @@ pub fn set_profile_panel_open_sync<R: Runtime>(
 
 fn apply_right_drawer_slide_frame<R: Runtime>(
     app: &AppHandle<R>,
+    win_label: &str,
     webview_label: &str,
     logical_width: f64,
     visible_width: u32,
 ) {
-    let Some(window) = app.get_window("main") else {
+    let Some(window) = app.get_window(win_label) else {
         return;
     };
     let Ok(scale) = window.scale_factor() else {
@@ -750,7 +854,10 @@ fn apply_right_drawer_slide_frame<R: Runtime>(
         return;
     }
 
-    let shell_logical_h = shell_height_for_find(*app.state::<AppState>().find_bar_open.lock().unwrap());
+    let state = app.state::<AppState>();
+    let density = state.preferences.lock().unwrap().ui_density;
+    let shell_logical_h =
+        shell_height_for_prefs(state.window_state(win_label).find_bar_open, density);
     if let (Some(dw), Some((dp_pos, dp_sz))) = (
         app.get_webview(webview_label),
         compute_right_panel_step_rect_with_shell(
@@ -762,13 +869,14 @@ fn apply_right_drawer_slide_frame<R: Runtime>(
             shell_logical_h,
         ),
     ) {
-        let _ = bridge::set_bounds_sync_native(&dw, dp_pos, dp_sz, true, true);
+        let _ = platform::ACTIVE_CONTROLLER.set_bounds_sync(&dw, dp_pos, dp_sz, true, true);
     }
 }
 
-fn set_right_drawer_open_sync<R: Runtime>(
+fn set_right_drawer_open_in_window<R: Runtime>(
     app: &AppHandle<R>,
-    webview_label: &str,
+    win_label: &str,
+    base_label: &str,
     html_file: &str,
     logical_width: f64,
     anim_counter: &AtomicU64,
@@ -779,24 +887,28 @@ fn set_right_drawer_open_sync<R: Runtime>(
     emit_shell_state(app);
 
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let physical = window.inner_size().map_err(|e| e.to_string())?;
     let target_w = compute_right_panel_target_width(physical.width, scale, logical_width);
+    let webview_label = panel_label_for_window(base_label, win_label);
+    let density = state.preferences.lock().unwrap().ui_density;
+    let base_shell_h = shell_height_for_prefs(state.window_state(win_label).find_bar_open, density);
 
-    if open && app.get_webview(webview_label).is_none() {
-        if let Some((_, dp_sz)) = compute_right_panel_step_rect(
+    if open && app.get_webview(&webview_label).is_none() {
+        if let Some((_, dp_sz)) = compute_right_panel_step_rect_with_shell(
             physical.width,
             physical.height,
             scale,
             logical_width,
             target_w,
+            base_shell_h,
         ) {
-            let shell_h = ((UI_SHELL_HEIGHT * scale).round() as i32).max(1);
+            let shell_h = ((base_shell_h * scale).round() as i32).max(1);
             let init_pos = PhysicalPosition::new(physical.width as i32, shell_h);
             let builder =
-                WebviewBuilder::new(webview_label, WebviewUrl::App(html_file.into()));
+                WebviewBuilder::new(&webview_label, WebviewUrl::App(html_file.into()));
             let _ = window
                 .add_child(builder, init_pos, dp_sz)
                 .map_err(|e| format!("Gagal membuka panel {webview_label}: {e}"))?;
@@ -816,7 +928,7 @@ fn set_right_drawer_open_sync<R: Runtime>(
         } else {
             (target_w as f64 * (1.0 - eased)).round() as u32
         };
-        apply_right_drawer_slide_frame(app, webview_label, logical_width, vis_w);
+        apply_right_drawer_slide_frame(app, win_label, &webview_label, logical_width, vis_w);
         if step < STEPS {
             std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
         }
@@ -826,12 +938,12 @@ fn set_right_drawer_open_sync<R: Runtime>(
         return Ok(());
     }
 
-    sync_bounds_on_resize(app);
+    sync_bounds_on_resize_for_window(app, win_label);
     if open {
-        if let Some(dw) = app.get_webview(webview_label) {
+        if let Some(dw) = app.get_webview(&webview_label) {
             let _ = dw.set_focus();
         }
-    } else if let Some(active_id) = state.active_tab_id.lock().unwrap().clone() {
+    } else if let Some(active_id) = state.active_tab_for(win_label) {
         if let Some(wv) = app.get_webview(&active_id) {
             let _ = wv.set_focus();
         }
@@ -840,23 +952,29 @@ fn set_right_drawer_open_sync<R: Runtime>(
     Ok(())
 }
 
-/// Opens or closes the floating right Download drawer (`download-panel` child webview).
-pub fn set_download_panel_open_sync<R: Runtime>(
+/// Opens or closes the floating right Download drawer for `win_label`.
+pub fn set_download_panel_open_in_window<R: Runtime>(
     app: &AppHandle<R>,
+    win_label: &str,
     open: bool,
 ) -> Result<(), String> {
     {
         let state = app.state::<AppState>();
-        *state.download_panel_open.lock().unwrap() = open;
+        state.update_window_state(win_label, |w| {
+            w.download_panel_open = open;
+            if open {
+                w.profile_panel_open = false;
+                w.monitor_panel_open = false;
+            }
+        });
         if open {
-            *state.profile_panel_open.lock().unwrap() = false;
-            *state.monitor_panel_open.lock().unwrap() = false;
             PANEL_ANIM_GEN.fetch_add(1, Ordering::Relaxed);
             MONITOR_ANIM_GEN.fetch_add(1, Ordering::Relaxed);
         }
     }
-    set_right_drawer_open_sync(
+    set_right_drawer_open_in_window(
         app,
+        win_label,
         "download-panel",
         "download-panel.html",
         DOWNLOAD_PANEL_WIDTH,
@@ -865,9 +983,10 @@ pub fn set_download_panel_open_sync<R: Runtime>(
     )
 }
 
-/// Opens or closes the floating right Task Monitor & Sleep Settings drawer (`task-monitor` child webview).
-pub fn set_monitor_panel_open_sync<R: Runtime>(
+/// Opens or closes the floating right Task Monitor & Settings drawer for `win_label`.
+pub fn set_monitor_panel_open_in_window<R: Runtime>(
     app: &AppHandle<R>,
+    win_label: &str,
     open: bool,
 ) -> Result<(), String> {
     if open {
@@ -875,16 +994,21 @@ pub fn set_monitor_panel_open_sync<R: Runtime>(
     }
     {
         let state = app.state::<AppState>();
-        *state.monitor_panel_open.lock().unwrap() = open;
+        state.update_window_state(win_label, |w| {
+            w.monitor_panel_open = open;
+            if open {
+                w.profile_panel_open = false;
+                w.download_panel_open = false;
+            }
+        });
         if open {
-            *state.profile_panel_open.lock().unwrap() = false;
-            *state.download_panel_open.lock().unwrap() = false;
             PANEL_ANIM_GEN.fetch_add(1, Ordering::Relaxed);
             DOWNLOAD_ANIM_GEN.fetch_add(1, Ordering::Relaxed);
         }
     }
-    set_right_drawer_open_sync(
+    set_right_drawer_open_in_window(
         app,
+        win_label,
         "task-monitor",
         "task-monitor.html",
         MONITOR_PANEL_WIDTH,
@@ -893,15 +1017,22 @@ pub fn set_monitor_panel_open_sync<R: Runtime>(
     )
 }
 
-/// Updates bounds for `ui-shell` and the active content child webview on window resize/DPI change.
-pub fn sync_bounds_on_resize<R: Runtime>(app: &AppHandle<R>) {
-    let Some(window) = app.get_window("main") else {
+pub fn sync_bounds_on_resize_for_window<R: Runtime>(app: &AppHandle<R>, win_label: &str) {
+    let Some(window) = app.get_window(win_label) else {
         return;
     };
     let Ok(physical) = window.inner_size() else {
         return;
     };
-    sync_bounds_with_size(app, physical.width, physical.height);
+    sync_bounds_with_size_for_window(app, win_label, physical.width, physical.height);
+}
+
+/// Updates bounds across all open browser windows.
+pub fn sync_bounds_on_resize<R: Runtime>(app: &AppHandle<R>) {
+    let win_labels = app.state::<AppState>().window_labels();
+    for win_label in win_labels {
+        sync_bounds_on_resize_for_window(app, &win_label);
+    }
 }
 
 /// Shared builder that attaches a child WebView (`tab_id`) to `main` with full RoleTab lifecycle hooks.
@@ -927,6 +1058,7 @@ fn attach_child_tab_webview<R: Runtime>(
     let tab_id_for_nav = tab_id.to_string();
 
     let app_for_new_win = app.clone();
+    let tab_id_for_new_win = tab_id.to_string();
     let profile_for_new_win = if is_ephemeral {
         "ephemeral".to_string()
     } else {
@@ -934,6 +1066,7 @@ fn attach_child_tab_webview<R: Runtime>(
     };
     let title_for_popup = display_name.to_string();
     let data_dir_for_popup = data_dir.clone();
+    let profile_id_for_popup = resolved_profile_id.to_string();
 
     let app_for_dl = app.clone();
     let tab_id_for_dl = tab_id.to_string();
@@ -971,12 +1104,13 @@ fn attach_child_tab_webview<R: Runtime>(
                     WebviewUrl::External("about:blank".parse().unwrap()),
                 )
                 .window_features(features)
-                .title(format!("RoleTab - {title_for_popup}"))
-                .data_directory(data_dir_for_popup.clone());
-
-                if is_ephemeral {
-                    popup_builder = popup_builder.incognito(true);
-                }
+                .title(format!("RoleTab - {title_for_popup}"));
+                popup_builder = platform::configure_popup_isolation(
+                    popup_builder,
+                    is_ephemeral,
+                    data_dir_for_popup.clone(),
+                    &profile_id_for_popup,
+                );
 
                 return match popup_builder.build() {
                     Ok(window) => NewWindowResponse::Create { window },
@@ -987,8 +1121,18 @@ fn attach_child_tab_webview<R: Runtime>(
             let app_spawn = app_for_new_win.clone();
             let profile_spawn = profile_for_new_win.clone();
             let url_spawn = req_url.to_string();
+            let target_win = app_for_new_win
+                .state::<AppState>()
+                .tab_window_label(&tab_id_for_new_win)
+                .unwrap_or_else(|| "main".to_string());
             tauri::async_runtime::spawn_blocking(move || {
-                let _ = spawn_tab(app_spawn, profile_spawn, is_ephemeral, Some(url_spawn));
+                let _ = spawn_tab_in_window(
+                    app_spawn,
+                    &target_win,
+                    profile_spawn,
+                    is_ephemeral,
+                    Some(url_spawn),
+                );
             });
             NewWindowResponse::Deny
         })
@@ -1092,38 +1236,45 @@ fn attach_child_tab_webview<R: Runtime>(
                 }
                 _ => true,
             }
-        })
-        .data_directory(data_dir);
+        });
+
+    builder = platform::configure_child_isolation(
+        builder,
+        is_ephemeral,
+        data_dir,
+        resolved_profile_id,
+    );
 
     if let Some(proxy) = proxy_url {
         builder = builder.proxy_url(proxy);
-    }
-
-    if is_ephemeral {
-        builder = builder.incognito(true);
     }
 
     let child_webview = window
         .add_child(builder, viewport.position, viewport.size)
         .map_err(|e| format!("Gagal membuat tab: {e}"))?;
 
-    let _ = bridge::attach_native_hooks(&child_webview, app.clone(), tab_id.to_string());
+    let _ = platform::ACTIVE_CONTROLLER.attach_lifecycle_bridge(
+        &child_webview,
+        app.clone(),
+        tab_id.to_string(),
+    );
     if (zoom_factor - 1.0).abs() > 0.001 {
-        let _ = bridge::set_webview_zoom(&child_webview, zoom_factor);
+        let _ = platform::ACTIVE_CONTROLLER.set_zoom(&child_webview, zoom_factor);
     }
     let _ = child_webview.set_bounds(viewport);
     Ok(child_webview)
 }
 
-/// Spawns a new isolated child webview tab and focuses it.
-/// Must be called off the main UI event-loop thread to avoid WebView2 `add_child` deadlocks.
-pub fn spawn_tab<R: Runtime>(
+/// Spawns a new isolated child webview tab inside `win_label` and focuses it.
+pub fn spawn_tab_in_window<R: Runtime>(
     app: AppHandle<R>,
+    win_label: &str,
     profile_key: String,
     is_ephemeral: bool,
     target_url: Option<String>,
 ) -> Result<TabEntry, String> {
     let state = app.state::<AppState>();
+    state.ensure_window(win_label);
     let parsed_url = match target_url {
         Some(raw) => normalize_address_input(&raw)?,
         None => DEFAULT_NEW_TAB_URL
@@ -1166,12 +1317,12 @@ pub fn spawn_tab<R: Runtime>(
         (record.id, record.name, record.color, dir, proxy)
     };
 
-    let viewport = current_viewport_rect(&app)?;
+    let viewport = current_viewport_rect_for_window(&app, win_label)?;
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(win_label)
+        .ok_or_else(|| format!("Window {win_label} not found"))?;
 
-    let prev_active = state.active_tab_id.lock().unwrap().clone();
+    let prev_active = state.active_tab_for(win_label);
 
     let child_webview = attach_child_tab_webview(
         &window,
@@ -1188,14 +1339,12 @@ pub fn spawn_tab<R: Runtime>(
         viewport,
     )?;
 
-    if *state.shell_overlay_open.lock().unwrap() {
+    if state.window_state(win_label).shell_overlay_open {
         let _ = child_webview.hide();
     } else {
         let _ = child_webview.set_focus();
     }
 
-    // Hide the previous tab ONLY AFTER the new child webview exists and is positioned,
-    // eliminating the black parent-window flash during tab creation.
     if let Some(prev_id) = prev_active.as_ref() {
         if let Some(prev_wv) = app.get_webview(prev_id) {
             let _ = prev_wv.hide();
@@ -1205,6 +1354,7 @@ pub fn spawn_tab<R: Runtime>(
     let now = unix_now_secs();
     let entry = TabEntry {
         id: tab_id.clone(),
+        window_label: win_label.to_string(),
         profile_id: resolved_profile_id,
         profile_key: display_name,
         profile_color: badge_color,
@@ -1235,20 +1385,29 @@ pub fn spawn_tab<R: Runtime>(
         }
         tabs.push(entry.clone());
     }
-    {
-        let mut active = state.active_tab_id.lock().unwrap();
-        *active = Some(tab_id);
-    }
+    state.set_active_tab_for(win_label, Some(tab_id));
 
-    sync_bounds_on_resize(&app);
+    sync_bounds_on_resize_for_window(&app, win_label);
     emit_shell_state(&app);
     Ok(entry)
 }
 
-/// Switches visible child webview to `tab_id`, resuming it if suspended.
+pub fn spawn_tab<R: Runtime>(
+    app: AppHandle<R>,
+    profile_key: String,
+    is_ephemeral: bool,
+    target_url: Option<String>,
+) -> Result<TabEntry, String> {
+    spawn_tab_in_window(app, "main", profile_key, is_ephemeral, target_url)
+}
+
+/// Switches visible child webview to `tab_id` inside its hosting window, resuming if suspended.
 pub fn switch_tab_sync<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let prev_id = state.active_tab_id.lock().unwrap().clone();
+    let win_label = state
+        .tab_window_label(tab_id)
+        .ok_or_else(|| "Tab tidak ditemukan".to_string())?;
+    let prev_id = state.active_tab_for(&win_label);
     if prev_id.as_deref() == Some(tab_id) {
         return Ok(());
     }
@@ -1271,10 +1430,10 @@ pub fn switch_tab_sync<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<(
         prev
     };
 
-    let viewport = current_viewport_rect(app)?;
+    let viewport = current_viewport_rect_for_window(app, &win_label)?;
     if let Some(wv) = app.get_webview(tab_id) {
         if was_sleeping {
-            let _ = bridge::resume_webview(&wv);
+            let _ = platform::ACTIVE_CONTROLLER.resume_tab(&wv);
         }
         let _ = wv.set_bounds(viewport);
         let _ = wv.show();
@@ -1287,16 +1446,15 @@ pub fn switch_tab_sync<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<(
         }
     }
 
-    *state.active_tab_id.lock().unwrap() = Some(tab_id.to_string());
-    sync_bounds_on_resize(app);
+    state.set_active_tab_for(&win_label, Some(tab_id.to_string()));
+    sync_bounds_on_resize_for_window(app, &win_label);
     emit_shell_state(app);
     Ok(())
 }
 
-/// Recreates a crashed tab (or all tabs of a crashed profile when `BrowserProcessExited`)
-/// cleanly in place without disturbing other tabs or losing pin/profile identity.
+/// Recreates a crashed tab (or all tabs of a crashed profile when `BrowserProcessExited`) cleanly in place.
 pub fn recover_tab_sync<R: Runtime>(app: AppHandle<R>, tab_id: &str) -> Result<(), String> {
-    let targets: Vec<(String, String, String, String, bool, String, f64)> = {
+    let targets: Vec<(String, String, String, String, String, bool, String, f64)> = {
         let state = app.state::<AppState>();
         let tabs = state.tabs.lock().unwrap();
         let src = tabs
@@ -1316,6 +1474,7 @@ pub fn recover_tab_sync<R: Runtime>(app: AppHandle<R>, tab_id: &str) -> Result<(
             .map(|t| {
                 (
                     t.id.clone(),
+                    t.window_label.clone(),
                     t.profile_id.clone(),
                     t.profile_key.clone(),
                     t.profile_color.clone(),
@@ -1327,13 +1486,15 @@ pub fn recover_tab_sync<R: Runtime>(app: AppHandle<R>, tab_id: &str) -> Result<(
             .collect()
     };
 
-    let viewport = current_viewport_rect(&app)?;
-    let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
     let state = app.state::<AppState>();
+    let mut touched_windows = HashSet::new();
 
-    for (old_id, prof_id, prof_name, prof_color, is_eph, raw_url, zoom) in targets {
+    for (old_id, win_label, prof_id, prof_name, prof_color, is_eph, raw_url, zoom) in targets {
+        let viewport = current_viewport_rect_for_window(&app, &win_label)?;
+        let window = app
+            .get_window(&win_label)
+            .ok_or_else(|| format!("Window {win_label} not found"))?;
+
         if let Some(old_wv) = app.get_webview(&old_id) {
             let _ = old_wv.close();
         }
@@ -1361,7 +1522,8 @@ pub fn recover_tab_sync<R: Runtime>(app: AppHandle<R>, tab_id: &str) -> Result<(
             (d, p_url)
         };
 
-        let is_active = state.active_tab_id.lock().unwrap().as_deref() == Some(old_id.as_str());
+        let win_ui = state.window_state(&win_label);
+        let is_active = win_ui.active_tab_id.as_deref() == Some(old_id.as_str());
         let new_wv = attach_child_tab_webview(
             &window,
             &app,
@@ -1376,7 +1538,7 @@ pub fn recover_tab_sync<R: Runtime>(app: AppHandle<R>, tab_id: &str) -> Result<(
             zoom,
             viewport,
         )?;
-        if is_active && !*state.shell_overlay_open.lock().unwrap() {
+        if is_active && !win_ui.shell_overlay_open {
             let _ = new_wv.show();
             let _ = new_wv.set_focus();
         } else {
@@ -1398,11 +1560,14 @@ pub fn recover_tab_sync<R: Runtime>(app: AppHandle<R>, tab_id: &str) -> Result<(
             }
         }
         if is_active {
-            *state.active_tab_id.lock().unwrap() = Some(new_id);
+            state.set_active_tab_for(&win_label, Some(new_id));
         }
+        touched_windows.insert(win_label);
     }
 
-    sync_bounds_on_resize(&app);
+    for win in touched_windows {
+        sync_bounds_on_resize_for_window(&app, &win);
+    }
     emit_shell_state(&app);
     Ok(())
 }
@@ -1431,17 +1596,15 @@ pub fn compute_next_zoom(current: f64, delta: Option<f64>) -> f64 {
     }
 }
 
-/// Adjusts or resets (`delta == None`) zoom level for the active tab independently.
-pub fn adjust_active_tab_zoom_sync<R: Runtime>(
+/// Adjusts or resets (`delta == None`) zoom level for the active tab in `win_label`.
+pub fn adjust_active_tab_zoom_in_window<R: Runtime>(
     app: &AppHandle<R>,
+    win_label: &str,
     delta: Option<f64>,
 ) -> Result<f64, String> {
     let state = app.state::<AppState>();
     let active_id = state
-        .active_tab_id
-        .lock()
-        .unwrap()
-        .clone()
+        .active_tab_for(win_label)
         .ok_or_else(|| "Tidak ada tab aktif".to_string())?;
     let next_zoom = {
         let mut tabs = state.tabs.lock().unwrap();
@@ -1453,34 +1616,39 @@ pub fn adjust_active_tab_zoom_sync<R: Runtime>(
         tab.zoom_factor
     };
     if let Some(wv) = app.get_webview(&active_id) {
-        bridge::set_webview_zoom(&wv, next_zoom)?;
+        platform::ACTIVE_CONTROLLER.set_zoom(&wv, next_zoom)?;
     }
     emit_shell_state(app);
     Ok(next_zoom)
 }
 
-/// Opens or closes the docked Find-in-Page bar in `ui-shell`, resizing viewport cleanly.
-pub fn set_find_bar_open_sync<R: Runtime>(app: &AppHandle<R>, open: bool) -> Result<(), String> {
+/// Opens or closes the docked Find-in-Page bar in `win_label`'s UI shell.
+pub fn set_find_bar_open_in_window<R: Runtime>(
+    app: &AppHandle<R>,
+    win_label: &str,
+    open: bool,
+) -> Result<(), String> {
     let active_id = {
         let state = app.state::<AppState>();
-        *state.find_bar_open.lock().unwrap() = open;
-        if !open {
-            *state.find_query.lock().unwrap() = String::new();
-        }
-        let res = state.active_tab_id.lock().unwrap().clone();
-        res
+        state.update_window_state(win_label, |w| {
+            w.find_bar_open = open;
+            if !open {
+                w.find_query.clear();
+            }
+        });
+        state.active_tab_for(win_label)
     };
     if !open {
         if let Some(id) = active_id.as_deref() {
             if let Some(wv) = app.get_webview(id) {
-                let _ = bridge::find_in_webview(&wv, "", true);
+                let _ = platform::ACTIVE_CONTROLLER.find_in_page(&wv, "", true);
             }
         }
     }
-    sync_bounds_on_resize(app);
+    sync_bounds_on_resize_for_window(app, win_label);
     emit_shell_state(app);
     if open {
-        if let Some(shell) = app.get_webview("ui-shell") {
+        if let Some(shell) = app.get_webview(&shell_label_for_window(win_label)) {
             let _ = shell.set_focus();
         }
     } else if let Some(id) = active_id {
@@ -1491,41 +1659,48 @@ pub fn set_find_bar_open_sync<R: Runtime>(app: &AppHandle<R>, open: bool) -> Res
     Ok(())
 }
 
-/// Searches `query` inside the active tab's DOM without exposing IPC, returning total matches.
-pub fn find_in_active_tab_sync<R: Runtime>(
+/// Searches `query` inside `win_label`'s active tab DOM without exposing IPC.
+pub fn find_in_active_tab_in_window<R: Runtime>(
     app: &AppHandle<R>,
+    win_label: &str,
     query: &str,
     forward: bool,
 ) -> Result<usize, String> {
     let active_id = {
         let state = app.state::<AppState>();
-        *state.find_query.lock().unwrap() = query.to_string();
-        let res = state
-            .active_tab_id
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| "Tidak ada tab aktif".to_string())?;
-        res
+        state.update_window_state(win_label, |w| {
+            w.find_query = query.to_string();
+        });
+        state
+            .active_tab_for(win_label)
+            .ok_or_else(|| "Tidak ada tab aktif".to_string())?
     };
     if let Some(wv) = app.get_webview(&active_id) {
-        bridge::find_in_webview(&wv, query, forward)
+        platform::ACTIVE_CONTROLLER.find_in_page(&wv, query, forward)
     } else {
         Ok(0)
     }
 }
 
-/// Launches every tab in a saved Workspace preset in 1 click.
-pub fn launch_workspace_sync<R: Runtime>(
+/// Launches every tab in a saved Workspace preset into `win_label` and applies workspace accent theme if set.
+pub fn launch_workspace_in_window<R: Runtime>(
     app: AppHandle<R>,
+    win_label: &str,
     workspace_id: &str,
 ) -> Result<usize, String> {
     let preset = {
         let state = app.state::<AppState>();
-        load_workspaces(&state.workspaces_path)
+        let loaded = load_workspaces(&state.workspaces_path)
             .into_iter()
             .find(|w| w.id == workspace_id)
-            .ok_or_else(|| "Workspace tidak ditemukan".to_string())?
+            .ok_or_else(|| "Workspace tidak ditemukan".to_string())?;
+        if let Some(ref accent) = loaded.accent_color {
+            let mut prefs = state.preferences.lock().unwrap().clone();
+            prefs.accent_color = Some(accent.clone());
+            let _ = crate::state::save_preferences(&state.prefs_path, &prefs);
+            *state.preferences.lock().unwrap() = prefs;
+        }
+        loaded
     };
 
     let mut launched = 0_usize;
@@ -1540,9 +1715,10 @@ pub fn launch_workspace_sync<R: Runtime>(
         } else {
             Some(spec.url)
         };
-        spawn_tab(app.clone(), target_prof, spec.is_ephemeral, target_url)?;
+        spawn_tab_in_window(app.clone(), win_label, target_prof, spec.is_ephemeral, target_url)?;
         launched += 1;
     }
+    emit_shell_state(&app);
     Ok(launched)
 }
 
@@ -1682,29 +1858,37 @@ pub fn apply_suspend_outcome<R: Runtime>(app: &AppHandle<R>, tab_id: &str, suspe
     }
 }
 
-/// Suspends a non-active hidden tab via `ICoreWebView2_3::TrySuspend`.
+/// Suspends a non-active hidden tab via active platform controller.
 pub fn sleep_tab_sync<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let active_id = state.active_tab_id.lock().unwrap().clone();
-    if active_id.as_deref() == Some(tab_id) {
+    if state.is_any_active_tab(tab_id) {
         return Err("Tab aktif tidak dapat di-sleep".to_string());
     }
 
     if let Some(wv) = app.get_webview(tab_id) {
         let _ = wv.hide();
-        bridge::suspend_webview(&wv, app.clone(), tab_id.to_string())?;
+        platform::ACTIVE_CONTROLLER.suspend_tab(&wv, app.clone(), tab_id.to_string())?;
     }
 
     Ok(())
 }
 
-/// Pure selector returning tab IDs eligible for background sleep.
-/// Excludes active tab, already sleeping tabs, pinned tabs, audio-playing tabs,
-/// crashed tabs, tabs with active in-progress downloads, and recently active tabs.
-/// When `idle_threshold_secs` is `None` (Auto-Sleep disabled), returns empty.
+/// Pure selector returning tab IDs eligible for background sleep across all open windows.
+#[cfg(test)]
 pub fn compute_idle_sleep_candidates(
     tabs: &[TabEntry],
     active_tab_id: Option<&str>,
+    downloads: &[DownloadEntry],
+    now_secs: u64,
+    idle_threshold_secs: Option<u64>,
+) -> Vec<String> {
+    let active_set: HashSet<&str> = active_tab_id.into_iter().collect();
+    compute_idle_sleep_candidates_multi(tabs, &active_set, downloads, now_secs, idle_threshold_secs)
+}
+
+pub fn compute_idle_sleep_candidates_multi(
+    tabs: &[TabEntry],
+    active_ids: &HashSet<&str>,
     downloads: &[DownloadEntry],
     now_secs: u64,
     idle_threshold_secs: Option<u64>,
@@ -1720,7 +1904,7 @@ pub fn compute_idle_sleep_candidates(
 
     tabs.iter()
         .filter(|tab| {
-            Some(tab.id.as_str()) != active_tab_id
+            !active_ids.contains(tab.id.as_str())
                 && !tab.is_sleeping
                 && !tab.is_pinned
                 && !tab.is_playing_audio
@@ -1743,10 +1927,17 @@ pub fn run_idle_sleep_check<R: Runtime>(app: &AppHandle<R>) {
         } else {
             Some(u64::from(idle_mins) * 60)
         };
-        let active_id = state.active_tab_id.lock().unwrap().clone();
         let tabs = state.tabs.lock().unwrap().clone();
+        let active_owned: Vec<String> = state
+            .windows
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|w| w.active_tab_id.clone())
+            .collect();
+        let active_refs: HashSet<&str> = active_owned.iter().map(String::as_str).collect();
         let downloads = state.downloads.lock().unwrap().clone();
-        compute_idle_sleep_candidates(&tabs, active_id.as_deref(), &downloads, unix_now_secs(), threshold)
+        compute_idle_sleep_candidates_multi(&tabs, &active_refs, &downloads, unix_now_secs(), threshold)
     };
     for tab_id in candidates {
         let _ = sleep_tab_sync(app, &tab_id);
@@ -1757,10 +1948,17 @@ pub fn run_idle_sleep_check<R: Runtime>(app: &AppHandle<R>) {
 pub fn sleep_inactive_tabs_sync<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
     let candidates = {
         let state = app.state::<AppState>();
-        let active_id = state.active_tab_id.lock().unwrap().clone();
         let tabs = state.tabs.lock().unwrap().clone();
+        let active_owned: Vec<String> = state
+            .windows
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|w| w.active_tab_id.clone())
+            .collect();
+        let active_refs: HashSet<&str> = active_owned.iter().map(String::as_str).collect();
         let downloads = state.downloads.lock().unwrap().clone();
-        compute_idle_sleep_candidates(&tabs, active_id.as_deref(), &downloads, unix_now_secs(), Some(0))
+        compute_idle_sleep_candidates_multi(&tabs, &active_refs, &downloads, unix_now_secs(), Some(0))
     };
     let count = candidates.len();
     for tab_id in candidates {
@@ -1769,61 +1967,70 @@ pub fn sleep_inactive_tabs_sync<R: Runtime>(app: &AppHandle<R>) -> Result<usize,
     Ok(count)
 }
 
-/// Duplicates `source_tab_id`'s current URL into a new tab using the target profile or ephemeral mode.
+/// Duplicates `source_tab_id`'s current URL into a new tab inside the same hosting window.
 pub fn duplicate_tab_sync<R: Runtime>(
     app: AppHandle<R>,
     source_tab_id: &str,
     target_profile: Option<String>,
     target_ephemeral: Option<bool>,
 ) -> Result<TabEntry, String> {
-    let (url, src_profile, src_ephemeral) = {
+    let (url, win_label, src_profile, src_ephemeral) = {
         let state = app.state::<AppState>();
         let tabs = state.tabs.lock().unwrap();
         let tab = tabs
             .iter()
             .find(|t| t.id == source_tab_id)
             .ok_or_else(|| "Tab sumber tidak ditemukan".to_string())?;
-        (tab.url.clone(), tab.profile_id.clone(), tab.is_ephemeral)
+        (
+            tab.url.clone(),
+            tab.window_label.clone(),
+            tab.profile_id.clone(),
+            tab.is_ephemeral,
+        )
     };
 
     let profile_key = target_profile.unwrap_or(src_profile);
     let is_ephemeral = target_ephemeral.unwrap_or(src_ephemeral);
-    spawn_tab(app, profile_key, is_ephemeral, Some(url))
+    spawn_tab_in_window(app, &win_label, profile_key, is_ephemeral, Some(url))
 }
 
-/// Closes a tab without auto-respawning when empty (used internally by profile deletion).
+/// Closes `tab_id` inside its hosting window without auto-respawning when empty.
+/// Returns `true` if that window now has zero tabs remaining.
 pub fn close_tab_internal<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<bool, String> {
     let state = app.state::<AppState>();
 
-    let (next_active, is_empty, was_ephemeral) = {
+    let (win_label, next_active, is_win_empty, was_ephemeral) = {
         let mut tabs = state.tabs.lock().unwrap();
         let mut removed_ephemeral = false;
+        let mut win = "main".to_string();
         if let Some(i) = tabs.iter().position(|t| t.id == tab_id) {
             removed_ephemeral = tabs[i].is_ephemeral;
+            win = tabs[i].window_label.clone();
             tabs.remove(i);
         }
-        (
-            tabs.last().map(|t| t.id.clone()),
-            tabs.is_empty(),
-            removed_ephemeral,
-        )
+        let next = tabs
+            .iter()
+            .rev()
+            .find(|t| t.window_label == win)
+            .map(|t| t.id.clone());
+        let empty = !tabs.iter().any(|t| t.window_label == win);
+        (win, next, empty, removed_ephemeral)
     };
 
     let was_active = {
-        let mut active = state.active_tab_id.lock().unwrap();
-        let matches = active.as_deref() == Some(tab_id);
+        let old = state.active_tab_for(&win_label);
+        let matches = old.as_deref() == Some(tab_id);
         if matches {
-            *active = next_active.clone();
+            state.set_active_tab_for(&win_label, next_active.clone());
         }
         matches
     };
 
-    // Show next active tab BEFORE closing the outgoing webview so no black gap appears.
     if was_active {
         if let Some(next_id) = next_active {
-            let viewport = current_viewport_rect(app)?;
+            let viewport = current_viewport_rect_for_window(app, &win_label)?;
             if let Some(wv) = app.get_webview(&next_id) {
-                let _ = bridge::resume_webview(&wv);
+                let _ = platform::ACTIVE_CONTROLLER.resume_tab(&wv);
                 let _ = wv.set_bounds(viewport);
                 let _ = wv.show();
                 let _ = wv.set_focus();
@@ -1846,23 +2053,25 @@ pub fn close_tab_internal<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Resul
         });
     }
 
-    if *state.profile_panel_open.lock().unwrap() {
-        sync_bounds_on_resize(app);
+    if state.window_state(&win_label).profile_panel_open {
+        sync_bounds_on_resize_for_window(app, &win_label);
     }
     emit_shell_state(app);
-    Ok(is_empty)
+    Ok(is_win_empty)
 }
 
-/// Closes all tabs except `keep_tab_id` and activates `keep_tab_id`.
+/// Closes all tabs inside `keep_tab_id`'s window except `keep_tab_id` itself.
 pub fn close_other_tabs_sync<R: Runtime>(app: &AppHandle<R>, keep_tab_id: &str) -> Result<(), String> {
     let other_ids: Vec<String> = {
         let state = app.state::<AppState>();
         let tabs = state.tabs.lock().unwrap();
-        if !tabs.iter().any(|t| t.id == keep_tab_id) {
-            return Err("Tab target tidak ditemukan".to_string());
-        }
+        let keep = tabs
+            .iter()
+            .find(|t| t.id == keep_tab_id)
+            .ok_or_else(|| "Tab target tidak ditemukan".to_string())?;
+        let win = keep.window_label.clone();
         tabs.iter()
-            .filter(|t| t.id != keep_tab_id)
+            .filter(|t| t.id != keep_tab_id && t.window_label == win)
             .map(|t| t.id.clone())
             .collect()
     };
@@ -1872,6 +2081,393 @@ pub fn close_other_tabs_sync<R: Runtime>(app: &AppHandle<R>, keep_tab_id: &str) 
     }
 
     switch_tab_sync(app, keep_tab_id)
+}
+
+/// Attaches UI Shell (`ui-shell` / `ui-shell--<win>`) and multi-window event handlers to `window`.
+pub fn setup_window_lifecycle<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &tauri::Window<R>,
+) -> Result<(), String> {
+    let win_label = window.label().to_string();
+    app.state::<AppState>().ensure_window(&win_label);
+
+    let app_ev = app.clone();
+    let win_ev = win_label.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::Resized(size) => {
+            sync_bounds_with_size_for_window(&app_ev, &win_ev, size.width, size.height);
+        }
+        WindowEvent::ScaleFactorChanged { .. }
+        | WindowEvent::Moved(_)
+        | WindowEvent::Focused(true) => {
+            sync_bounds_on_resize_for_window(&app_ev, &win_ev);
+        }
+        WindowEvent::CloseRequested { .. } => {
+            close_browser_window(&app_ev, &win_ev);
+        }
+        WindowEvent::Destroyed => {
+            let remaining = app_ev.state::<AppState>().remove_window(&win_ev);
+            if remaining == 0 {
+                app_ev.exit(0);
+            } else {
+                emit_shell_state(&app_ev);
+            }
+        }
+        _ => {}
+    });
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let inner = window.inner_size().map_err(|e| e.to_string())?;
+    let density = app.state::<AppState>().preferences.lock().unwrap().ui_density;
+    let shell_h = shell_height_for_prefs(false, density);
+    let (shell_rect, _, _) =
+        compute_physical_side_layout_rects_with_shell(inner.width, inner.height, scale, false, shell_h);
+
+    let shell_lbl = shell_label_for_window(&win_label);
+    let shell_builder = WebviewBuilder::new(&shell_lbl, WebviewUrl::App("index.html".into()));
+    window
+        .add_child(shell_builder, shell_rect.position, shell_rect.size)
+        .map_err(|e| e.to_string())?;
+    sync_bounds_on_resize_for_window(app, &win_label);
+    let _ = window.show();
+    Ok(())
+}
+
+/// Closes a browser window's tabs (preserving global persistent profile store) and exits only if last window.
+pub fn close_browser_window<R: Runtime>(app: &AppHandle<R>, win_label: &str) {
+    let tab_ids: Vec<(String, bool)> = {
+        let state = app.state::<AppState>();
+        let mut tabs = state.tabs.lock().unwrap();
+        let mut removed = Vec::new();
+        tabs.retain(|t| {
+            if t.window_label == win_label {
+                removed.push((t.id.clone(), t.is_ephemeral));
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    };
+
+    for (tid, is_eph) in tab_ids {
+        if let Some(wv) = app.get_webview(&tid) {
+            let _ = wv.close();
+        }
+        if is_eph {
+            let dir = app.state::<AppState>().ephemeral_dir.join(&tid);
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = delete_dir_with_retry(&dir, 5, std::time::Duration::from_millis(80));
+            });
+        }
+    }
+
+    let remaining = app.state::<AppState>().remove_window(win_label);
+    if remaining == 0 {
+        app.exit(0);
+    } else {
+        emit_shell_state(app);
+    }
+}
+
+fn window_bg_color<R: Runtime>(app: &AppHandle<R>) -> tauri::window::Color {
+    let theme = app.state::<AppState>().preferences.lock().unwrap().theme.clone();
+    match theme {
+        crate::state::ThemeMode::Dark => tauri::window::Color(32, 33, 36, 255),
+        _ => tauri::window::Color(241, 243, 244, 255),
+    }
+}
+
+/// Spawns a new RoleTab main browser window sharing the same OS process and profile store.
+pub fn spawn_browser_window<R: Runtime>(
+    app: AppHandle<R>,
+    profile_key: Option<String>,
+    is_ephemeral: Option<bool>,
+    target_url: Option<String>,
+    position: Option<(i32, i32)>,
+) -> Result<String, String> {
+    let win_label = format!("main-{}", WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let bg = window_bg_color(&app);
+
+    let mut builder = WindowBuilder::new(&app, &win_label)
+        .title("RoleTab")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(480.0, 320.0)
+        .background_color(bg)
+        .visible(false);
+    if let Some((px, py)) = position {
+        builder = builder.position(f64::from(px), f64::from(py));
+    }
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone()).map_err(|e| e.to_string())?;
+    }
+
+    let window = builder.build().map_err(|e| format!("Gagal membuat window baru: {e}"))?;
+    setup_window_lifecycle(&app, &window)?;
+
+    let (resolved_profile, resolved_ephemeral) = if let Some(pk) = profile_key {
+        (pk, is_ephemeral.unwrap_or(false))
+    } else {
+        let state = app.state::<AppState>();
+        let def = state.preferences.lock().unwrap().default_profile.clone();
+        default_startup_profile(
+            &state.profiles_dir,
+            &state.profiles_store_path,
+            &state.profile_names_path,
+            def.as_deref(),
+        )
+    };
+
+    spawn_tab_in_window(
+        app,
+        &win_label,
+        resolved_profile,
+        resolved_ephemeral,
+        target_url,
+    )?;
+    Ok(win_label)
+}
+
+/// Pure hit-testing helper returning the first candidate `(label, pos, size)` containing `(screen_x, screen_y)`.
+pub fn find_target_window_at_point<'a>(
+    candidates: &'a [(String, i32, i32, u32, u32)],
+    screen_x: i32,
+    screen_y: i32,
+) -> Option<&'a str> {
+    candidates.iter().find_map(|(label, wx, wy, ww, wh)| {
+        let right = wx.saturating_add(*ww as i32);
+        let bottom = wy.saturating_add(*wh as i32);
+        if screen_x >= *wx && screen_x <= right && screen_y >= *wy && screen_y <= bottom {
+            Some(label.as_str())
+        } else {
+            None
+        }
+    })
+}
+
+/// Moves an existing tab (`tab_id`) cleanly into `target_win_label`, recreating its child webview
+/// under the destination window while preserving profile session isolation, URL, zoom, and pin state.
+pub fn move_tab_to_window_sync<R: Runtime>(
+    app: AppHandle<R>,
+    tab_id: &str,
+    target_win_label: &str,
+) -> Result<(), String> {
+    let target_window = app
+        .get_window(target_win_label)
+        .ok_or_else(|| format!("Window tujuan {target_win_label} tidak ditemukan"))?;
+
+    let state = app.state::<AppState>();
+    let (src_win, prof_id, prof_name, prof_color, is_eph, raw_url, zoom, is_pinned, title) = {
+        let tabs = state.tabs.lock().unwrap();
+        let tab = tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| "Tab tidak ditemukan".to_string())?;
+        if tab.window_label == target_win_label {
+            return Ok(());
+        }
+        (
+            tab.window_label.clone(),
+            tab.profile_id.clone(),
+            tab.profile_key.clone(),
+            tab.profile_color.clone(),
+            tab.is_ephemeral,
+            tab.url.clone(),
+            tab.zoom_factor,
+            tab.is_pinned,
+            tab.title.clone(),
+        )
+    };
+
+    let (data_dir, proxy_url) = if is_eph {
+        let dir = state.ephemeral_dir.join(tab_id);
+        let _ = std::fs::create_dir_all(&dir);
+        (dir, None)
+    } else {
+        let dir = profile_data_dir(&state.profiles_dir, &prof_id);
+        let _ = std::fs::create_dir_all(&dir);
+        let p_url = find_profile_record(
+            &state.profiles_dir,
+            &state.profiles_store_path,
+            &state.profile_names_path,
+            &prof_id,
+        )
+        .and_then(|rec| {
+            build_profile_proxy_url(&rec.proxy_mode, rec.proxy_address.as_deref())
+                .ok()
+                .flatten()
+        });
+        (dir, p_url)
+    };
+
+    if let Some(old_wv) = app.get_webview(tab_id) {
+        let _ = old_wv.close();
+    }
+
+    let prev_target_active = state.active_tab_for(target_win_label);
+    let viewport = current_viewport_rect_for_window(&app, target_win_label)?;
+    let parsed_url =
+        normalize_address_input(&raw_url).unwrap_or_else(|_| DEFAULT_NEW_TAB_URL.parse().unwrap());
+
+    let new_wv = attach_child_tab_webview(
+        &target_window,
+        &app,
+        tab_id,
+        &parsed_url,
+        &prof_id,
+        &prof_name,
+        &prof_color,
+        is_eph,
+        data_dir,
+        proxy_url,
+        zoom,
+        viewport,
+    )?;
+
+    if let Some(prev_t_id) = prev_target_active.as_ref() {
+        if let Some(prev_wv) = app.get_webview(prev_t_id) {
+            let _ = prev_wv.hide();
+        }
+    }
+
+    let (src_next_active, src_empty) = {
+        let mut tabs = state.tabs.lock().unwrap();
+        if let Some(tab) = tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.window_label = target_win_label.to_string();
+            tab.is_sleeping = false;
+            tab.is_pinned = is_pinned;
+            tab.title = title;
+        }
+        let next = tabs
+            .iter()
+            .rev()
+            .find(|t| t.window_label == src_win)
+            .map(|t| t.id.clone());
+        let empty = !tabs.iter().any(|t| t.window_label == src_win);
+        (next, empty)
+    };
+
+    if state.active_tab_for(&src_win).as_deref() == Some(tab_id) {
+        state.set_active_tab_for(&src_win, src_next_active.clone());
+        if let Some(next_id) = src_next_active {
+            if let Some(wv) = app.get_webview(&next_id) {
+                let _ = platform::ACTIVE_CONTROLLER.resume_tab(&wv);
+                if let Ok(vp) = current_viewport_rect_for_window(&app, &src_win) {
+                    let _ = wv.set_bounds(vp);
+                }
+                let _ = wv.show();
+            }
+        }
+    }
+
+    state.set_active_tab_for(target_win_label, Some(tab_id.to_string()));
+    if !state.window_state(target_win_label).shell_overlay_open {
+        let _ = new_wv.show();
+        let _ = new_wv.set_focus();
+    } else {
+        let _ = new_wv.hide();
+    }
+    let _ = target_window.unminimize();
+    let _ = target_window.set_focus();
+
+    if src_empty && state.window_labels().len() > 1 {
+        if let Some(src_window) = app.get_window(&src_win) {
+            let _ = src_window.close();
+        }
+    } else if src_empty {
+        let def = state.preferences.lock().unwrap().default_profile.clone();
+        let (fb_prof, fb_eph) = default_startup_profile(
+            &state.profiles_dir,
+            &state.profiles_store_path,
+            &state.profile_names_path,
+            def.as_deref(),
+        );
+        let _ = spawn_tab_in_window(app.clone(), &src_win, fb_prof, fb_eph, None);
+    }
+
+    sync_bounds_on_resize(&app);
+    emit_shell_state(&app);
+    Ok(())
+}
+
+/// Detaches `tab_id` from a multi-tab window into a brand new RoleTab window.
+pub fn detach_tab_to_new_window_sync<R: Runtime>(
+    app: AppHandle<R>,
+    tab_id: &str,
+    screen_x: Option<i32>,
+    screen_y: Option<i32>,
+) -> Result<String, String> {
+    let src_win = {
+        let state = app.state::<AppState>();
+        let tabs = state.tabs.lock().unwrap();
+        let tab = tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .ok_or_else(|| "Tab tidak ditemukan".to_string())?;
+        let win_count = tabs
+            .iter()
+            .filter(|t| t.window_label == tab.window_label)
+            .count();
+        if win_count <= 1 {
+            return Err("Tab tunggal tidak perlu dipisah ke window baru".to_string());
+        }
+        tab.window_label.clone()
+    };
+
+    let win_label = format!("main-{}", WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let bg = window_bg_color(&app);
+    let mut builder = WindowBuilder::new(&app, &win_label)
+        .title("RoleTab")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(480.0, 320.0)
+        .background_color(bg)
+        .visible(false);
+    if let (Some(sx), Some(sy)) = (screen_x, screen_y) {
+        builder = builder.position(f64::from(sx.saturating_sub(140).max(0)), f64::from(sy.saturating_sub(24).max(0)));
+    }
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone()).map_err(|e| e.to_string())?;
+    }
+
+    let window = builder.build().map_err(|e| format!("Gagal memisah window: {e}"))?;
+    setup_window_lifecycle(&app, &window)?;
+    move_tab_to_window_sync(app.clone(), tab_id, &win_label)?;
+    let _ = src_win;
+    Ok(win_label)
+}
+
+/// Drops a dragged tab at `(screen_x, screen_y)`: moves it into an existing RoleTab window under
+/// the cursor if found, or detaches it into a new RoleTab window otherwise.
+pub fn drop_tab_at_screen_point_sync<R: Runtime>(
+    app: AppHandle<R>,
+    tab_id: &str,
+    screen_x: i32,
+    screen_y: i32,
+) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    let src_win = state
+        .tab_window_label(tab_id)
+        .ok_or_else(|| "Tab tidak ditemukan".to_string())?;
+
+    let candidates: Vec<(String, i32, i32, u32, u32)> = state
+        .window_labels()
+        .into_iter()
+        .filter(|lbl| lbl != &src_win)
+        .filter_map(|lbl| {
+            let w = app.get_window(&lbl)?;
+            let pos = w.outer_position().ok()?;
+            let sz = w.outer_size().ok()?;
+            Some((lbl, pos.x, pos.y, sz.width, sz.height))
+        })
+        .collect();
+
+    if let Some(target_win) = find_target_window_at_point(&candidates, screen_x, screen_y) {
+        let target = target_win.to_string();
+        move_tab_to_window_sync(app, tab_id, &target)?;
+        Ok(target)
+    } else {
+        detach_tab_to_new_window_sync(app, tab_id, Some(screen_x), Some(screen_y))
+    }
 }
 
 #[cfg(test)]
@@ -2059,6 +2655,7 @@ mod tests {
         let now = 2_000_u64;
         let mk_tab = |id: &str, sleeping: bool, pinned: bool, audio: bool, crash: Option<TabCrashKind>, last_active_at: u64| TabEntry {
             id: id.into(),
+            window_label: "main".into(),
             profile_id: "p1".into(),
             profile_key: "Admin".into(),
             profile_color: "#b91c1c".into(),
@@ -2141,6 +2738,7 @@ mod tests {
                 let mut tabs = state.tabs.lock().unwrap();
                 tabs.push(TabEntry {
                     id: tid.clone(),
+                    window_label: "main".into(),
                     profile_id: tid.clone(),
                     profile_key: "Ephemeral".into(),
                     profile_color: "#4b5563".into(),
@@ -2161,12 +2759,14 @@ mod tests {
                     title: tid.clone(),
                     url: "https://example.test".into(),
                 });
-                *state.active_tab_id.lock().unwrap() = Some(tid.clone());
+                state.set_active_tab_for("main", Some(tid.clone()));
             }
             {
                 let mut tabs = state.tabs.lock().unwrap();
                 tabs.retain(|t| t.id != tid);
-                *state.active_tab_id.lock().unwrap() = tabs.last().map(|t| t.id.clone());
+                let next = tabs.last().map(|t| t.id.clone());
+                drop(tabs);
+                state.set_active_tab_for("main", next);
             }
             delete_dir_with_retry(&eph_dir.join(&tid), 3, std::time::Duration::from_millis(10))
                 .unwrap();
@@ -2191,5 +2791,68 @@ mod tests {
         assert_eq!(compute_next_zoom(1.4, None), 1.0);
         assert_eq!(shell_height_for_find(false), UI_SHELL_HEIGHT);
         assert_eq!(shell_height_for_find(true), UI_SHELL_FIND_HEIGHT);
+        assert_eq!(shell_height_for_prefs(false, UiDensity::Compact), UI_SHELL_COMPACT_HEIGHT);
+        assert_eq!(shell_height_for_prefs(true, UiDensity::Compact), UI_SHELL_COMPACT_FIND_HEIGHT);
+    }
+
+    #[test]
+    fn resolves_multi_window_labels_reordering_and_screen_hit_testing() {
+        assert_eq!(shell_label_for_window("main"), "ui-shell");
+        assert_eq!(shell_label_for_window("main-2"), "ui-shell--main-2");
+        assert_eq!(window_label_from_webview_label("ui-shell"), "main");
+        assert_eq!(window_label_from_webview_label("ui-shell--main-2"), "main-2");
+        assert_eq!(window_label_from_webview_label("task-monitor--main-3"), "main-3");
+
+        let mk = |id: &str, win: &str| TabEntry {
+            id: id.into(),
+            window_label: win.into(),
+            profile_id: "p1".into(),
+            profile_key: "Admin".into(),
+            profile_color: "#b91c1c".into(),
+            is_ephemeral: false,
+            is_sleeping: false,
+            is_pinned: false,
+            is_playing_audio: false,
+            browser_pid: None,
+            memory_mb: None,
+            zoom_factor: 1.0,
+            crash_kind: None,
+            last_active_at: 0,
+            can_go_back: false,
+            can_go_forward: false,
+            is_loading: false,
+            has_cert_warning: false,
+            favicon_url: None,
+            title: id.into(),
+            url: "https://example.com".into(),
+        };
+
+        let mut tabs = vec![
+            mk("a1", "main"),
+            mk("b1", "main-2"),
+            mk("a2", "main"),
+            mk("a3", "main"),
+        ];
+        assert!(reorder_window_tabs_vec(&mut tabs, "main", 0, 2));
+        let main_ids: Vec<&str> = tabs
+            .iter()
+            .filter(|t| t.window_label == "main")
+            .map(|t| t.id.as_str())
+            .collect();
+        let w2_ids: Vec<&str> = tabs
+            .iter()
+            .filter(|t| t.window_label == "main-2")
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(main_ids, vec!["a2", "a3", "a1"]);
+        assert_eq!(w2_ids, vec!["b1"]);
+
+        let wins = vec![
+            ("main-2".to_string(), 1400, 100, 1280, 820),
+            ("main-3".to_string(), 50, 50, 800, 600),
+        ];
+        assert_eq!(find_target_window_at_point(&wins, 1600, 300), Some("main-2"));
+        assert_eq!(find_target_window_at_point(&wins, 200, 200), Some("main-3"));
+        assert_eq!(find_target_window_at_point(&wins, 1300, 300), None);
     }
 }
