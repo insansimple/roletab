@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="id" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <title>RoleTab - Profile Manager</title>
+  <link rel="stylesheet" href="./vendor/fontawesome/css/all.min.css" />
+  <style>
+    :root,
+    :root[data-theme="dark"] {
+      --panel-bg: #202124;
+      --surface-bg: #292a2d;
+      --input-bg: #202124;
+      --border-subtle: #3c4043;
+      --text-main: #e8eaed;
+      --text-muted: #9aa0a6;
+      --btn-hover: rgba(255, 255, 255, 0.1);
+      --accent-focus: #8ab4f8;
+      --primary-btn: #1a73e8;
+      --danger-text: #f28b82;
+      --ok-text: #81c995;
+    }
+    :root[data-theme="light"] {
+      --panel-bg: #f1f3f4;
+      --surface-bg: #ffffff;
+      --input-bg: #f1f3f4;
+      --border-subtle: #dadce0;
+      --text-main: #202124;
+      --text-muted: #5f6368;
+      --btn-hover: rgba(32, 33, 36, 0.08);
+      --accent-focus: #1a73e8;
+      --primary-btn: #1a73e8;
+      --danger-text: #c5221f;
+      --ok-text: #137333;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100vh;
+      overflow: hidden;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--panel-bg);
+      color: var(--text-main);
+    }
+    .side-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      border-right: 2px solid var(--border-subtle);
+    }
+    .side-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 12px 14px;
+      background: var(--surface-bg);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .side-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .side-title i { color: var(--accent-focus); }
+    .side-header-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-main);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .icon-btn:hover { background: var(--btn-hover); }
+
+    .btn {
+      height: 28px;
+      padding: 0 9px;
+      border-radius: 8px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--border-subtle);
+      color: var(--text-main);
+    }
+    .btn-ghost:hover:not(:disabled) { background: var(--btn-hover); }
+    .btn-ghost:disabled { opacity: 0.45; cursor: default; }
+    .btn-primary {
+      background: var(--primary-btn);
+      color: #ffffff;
+    }
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-danger {
+      background: #b91c1c;
+      color: #ffffff;
+    }
+    .btn-danger:hover { filter: brightness(1.08); }
+
+    .side-subbar {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 11px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .notice-bar {
+      padding: 8px 14px;
+      background: var(--surface-bg);
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--ok-text);
+      flex-shrink: 0;
+    }
+    .notice-bar[hidden] { display: none; }
+
+    .create-box,
+    .edit-box {
+      padding: 10px 12px;
+      background: var(--surface-bg);
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      flex-shrink: 0;
+    }
+    .edit-box {
+      padding: 8px 0 0 0;
+      border-bottom: 0;
+      border-top: 1px solid var(--border-subtle);
+      background: transparent;
+    }
+    .create-box[hidden] { display: none; }
+    .create-label {
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+    .create-input {
+      width: 100%;
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--input-bg);
+      color: var(--text-main);
+      font-size: 12.5px;
+    }
+    .create-input:focus {
+      border-color: var(--accent-focus);
+      outline: none;
+    }
+    .swatch-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .swatch-btn {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-size: 10px;
+      padding: 0;
+    }
+    .swatch-btn.selected {
+      border-color: var(--text-main);
+    }
+    .create-error {
+      margin: 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--danger-text);
+    }
+    .create-error[hidden] { display: none; }
+    .create-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .side-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .profile-item {
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--surface-bg);
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .profile-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .profile-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .role-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #ffffff;
+      flex-shrink: 0;
+    }
+    .profile-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      flex: 1;
+    }
+    .profile-name-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .profile-name {
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .default-tag {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(138, 180, 248, 0.16);
+      color: var(--accent-focus);
+      border: 1px solid rgba(138, 180, 248, 0.35);
+      flex-shrink: 0;
+    }
+    .profile-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .profile-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .action-menu {
+      position: fixed;
+      min-width: 158px;
+      padding: 5px;
+      border-radius: 10px;
+      background: var(--surface-bg);
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      z-index: 60;
+    }
+    .action-menu[hidden] { display: none; }
+    .action-menu-item {
+      width: 100%;
+      height: 30px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-main);
+      font-size: 12px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      white-space: nowrap;
+      text-align: left;
+    }
+    .action-menu-item:hover:not(:disabled) {
+      background: var(--btn-hover);
+    }
+    .action-menu-item:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .action-menu-item.danger {
+      color: var(--danger-text);
+    }
+    .action-menu-sep {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 3px 4px;
+    }
+    .confirm-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border-subtle);
+      font-size: 11px;
+      color: var(--danger-text);
+    }
+    .confirm-row.neutral {
+      color: var(--text-main);
+    }
+    .confirm-btns {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .empty-state {
+      margin-top: 16px;
+      padding: 20px 14px;
+      border-radius: 10px;
+      background: var(--surface-bg);
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 8px;
+    }
+    .empty-state i {
+      font-size: 22px;
+      color: var(--text-muted);
+    }
+    .empty-state h2 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .empty-state p {
+      margin: 0 0 4px 0;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="side-shell">
+    <div class="side-header">
+      <h1 class="side-title">
+        <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
+        <span id="panelTitle">Kelola Profil</span>
+      </h1>
+      <div class="side-header-actions">
+        <button type="button" class="btn btn-primary" id="toggleCreateBtn">
+          <i class="fa-solid fa-plus" aria-hidden="true"></i>
+          <span id="toggleCreateLabel">Buat Profil</span>
+        </button>
+        <button type="button" class="icon-btn" id="closePanelBtn">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="side-subbar" id="profilesDirLabel"></div>
+    <div class="notice-bar" id="panelNotice" hidden></div>
+
+    <form class="create-box" id="sideCreateForm" hidden novalidate>
+      <label class="create-label" id="sideCreateLabel" for="sideProfileInput">Nama Profil</label>
+      <input class="create-input" id="sideProfileInput" type="text" maxlength="40" autocomplete="off" />
+      <label class="create-label" id="sideCreateColorLabel">Warna Label</label>
+      <div class="swatch-row" id="sideCreateColorRow"></div>
+      <p class="create-error" id="sideCreateError" hidden></p>
+      <div class="create-actions">
+        <button type="button" class="btn btn-ghost" id="sideCreateCancelBtn">Batal</button>
+        <button type="submit" class="btn btn-primary" id="sideCreateSubmitBtn">Buat Profil</button>
+      </div>
+    </form>
+
+    <div class="side-body" id="profileList"></div>
+  </div>
+
+  <div class="action-menu" id="profileActionMenu" hidden></div>
+
+  <script src="./i18n.js"></script>
+  <script src="./profile-panel.js"></script>
+</body>
+</html>

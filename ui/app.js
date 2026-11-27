@@ -1,0 +1,789 @@
+(() => {
+  const { invoke } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+  const currentWebview = window.__TAURI__.webview?.getCurrentWebview?.();
+
+  let currentState = {
+    webview2Version: '',
+    profilesDir: '',
+    preferences: { theme: 'system', language: 'id' },
+    profiles: [],
+    colorPresets: ['#b91c1c', '#1d4ed8', '#0f766e', '#6d28d9', '#b45309', '#047857', '#be185d', '#334155'],
+    tabs: [],
+    activeTabId: null,
+    activeAwakeCount: 0,
+    downloads: [],
+    profilePanelOpen: false,
+    downloadPanelOpen: false
+  };
+  let selectedModalColor = '#1d4ed8';
+  let dragFromIndex = null;
+  let lastRenderedIds = '';
+  let cachedAppInfo = null;
+  let lastUpdateCheck = null;
+  const mediaDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+  function t(key) {
+    const lang = currentState.preferences?.language || 'id';
+    return (window.ROLETAB_I18N[lang] || window.ROLETAB_I18N.id)[key] || key;
+  }
+
+  function applyTheme() {
+    const mode = currentState.preferences?.theme || 'system';
+    const resolved = mode === 'system' ? (mediaDark.matches ? 'dark' : 'light') : mode;
+    document.documentElement.setAttribute('data-theme', resolved);
+
+    const themeIcon = document.getElementById('themeIcon');
+    if (mode === 'dark') themeIcon.className = 'fa-solid fa-moon';
+    else if (mode === 'light') themeIcon.className = 'fa-solid fa-sun';
+    else themeIcon.className = 'fa-solid fa-circle-half-stroke';
+  }
+
+  function applyStaticTranslations() {
+    const lang = currentState.preferences?.language || 'id';
+    document.documentElement.lang = lang;
+
+    const setAriaTitle = (id, ariaKey, titleKey = ariaKey) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.setAttribute('aria-label', t(ariaKey));
+      el.title = t(titleKey);
+    };
+
+    setAriaTitle('newTabBtn', 'newTab', 'newTabTooltip');
+    setAriaTitle('profileMgrBtn', 'profileManager');
+    setAriaTitle('overflowBtn', 'allTabs');
+    setAriaTitle('backBtn', 'back');
+    setAriaTitle('forwardBtn', 'forward');
+    setAriaTitle('homeBtn', 'home');
+    setAriaTitle('goBtn', 'goUrl');
+    setAriaTitle('newEphemBtn', 'newEphemeralTab');
+    setAriaTitle('downloadsBtn', 'downloadsTitle');
+    setAriaTitle('awakeWarnBtn', 'awakeWarnTooltip');
+    setAriaTitle('updateReadyBtn', 'updateReadyTooltip');
+    setAriaTitle('themeBtn', 'themeTooltip');
+    setAriaTitle('menuBtn', 'menuLabel', 'menuTooltip');
+    setAriaTitle('closeProfileModalBtn', 'closeModal');
+    setAriaTitle('closeAboutModalBtn', 'closeModal');
+
+    document.getElementById('newProfileModalTitle').textContent = t('newProfileTitle');
+    document.getElementById('newProfileInputLabel').textContent = t('newProfileLabel');
+    document.getElementById('newProfileColorLabel').textContent = t('colorLabel');
+    document.getElementById('newProfileNameInput').placeholder = t('newProfilePlaceholder');
+    document.getElementById('newProfileHint').textContent = t('newProfileHint');
+    document.getElementById('cancelProfileModalBtn').textContent = t('cancel');
+    document.getElementById('submitProfileModalBtn').textContent = t('createProfileBtn');
+
+    document.getElementById('aboutModalTitle').textContent = t('aboutTitle');
+    document.getElementById('aboutProfilesDirLabel').textContent = t('aboutDataDirLabel');
+    document.getElementById('closeAboutFooterBtn').textContent = t('closeModal');
+    document.getElementById('checkUpdatesLabel').textContent = t('checkUpdatesBtn');
+    document.getElementById('installUpdateBtn').textContent = t('installUpdateBtn');
+    document.getElementById('updateReadyLabel').textContent = t('updateBtnLabel');
+
+    const langBtn = document.getElementById('langBtn');
+    langBtn.textContent = t('langLabel');
+    langBtn.title = t('langTooltip');
+
+    const urlInput = document.getElementById('urlInput');
+    urlInput.placeholder = t('addressPlaceholder');
+    urlInput.setAttribute('aria-label', t('addressLabel'));
+  }
+
+  function shortProfileLabel(name, isEphemeral) {
+    if (isEphemeral) return 'eph';
+    const raw = (name || '').trim();
+    const lower = raw.toLowerCase();
+    if (lower === 'admin') return 'adm';
+    if (lower === 'user') return 'usr';
+    if (lower.length <= 3) return lower;
+    const alnum = lower.replace(/[^a-z0-9]/g, '');
+    return (alnum || lower).slice(0, 3);
+  }
+
+  function roleStyle(tab) {
+    if (tab.isEphemeral) {
+      return {
+        cls: 'ephem',
+        color: tab.profileColor || '#4b5563',
+        label: t('ephemeralLabel'),
+        short: 'eph',
+        icon: 'fa-user-secret'
+      };
+    }
+    const lower = (tab.profileKey || '').toLowerCase();
+    const short = shortProfileLabel(tab.profileKey, false);
+    const color = tab.profileColor || '#1d4ed8';
+    const icon = lower === 'admin' ? 'fa-user-shield' : (lower === 'user' ? 'fa-user' : 'fa-user-tag');
+    return { cls: 'custom', color, label: tab.profileKey, short, icon };
+  }
+
+  function updateProtocolIcon(rawUrl, hasCertWarning) {
+    const icon = document.getElementById('protoIcon');
+    icon.className = 'fa-solid proto-icon';
+    if (hasCertWarning) {
+      icon.classList.add('fa-triangle-exclamation', 'proto-warn');
+      icon.title = t('protoCertWarn');
+    } else if (!rawUrl || rawUrl === 'about:blank') {
+      icon.classList.add('fa-compass', 'proto-blank');
+      icon.title = t('protoBlank');
+    } else if (rawUrl.startsWith('https://')) {
+      icon.classList.add('fa-lock', 'proto-https');
+      icon.title = t('protoHttps');
+    } else if (rawUrl.includes('127.0.0.1') || rawUrl.includes('localhost')) {
+      icon.classList.add('fa-server', 'proto-local');
+      icon.title = t('protoLocal');
+    } else {
+      icon.classList.add('fa-globe', 'proto-http');
+      icon.title = t('protoHttp');
+    }
+  }
+
+  function createFallbackIcon(style) {
+    const icon = document.createElement('i');
+    icon.className = `fa-solid ${style.icon} tab-lead-icon`;
+    icon.setAttribute('aria-hidden', 'true');
+    icon.style.fontSize = '11px';
+    return icon;
+  }
+
+  function syncTabLeadIcon(el, tab, style) {
+    const existing = el.querySelector('.tab-lead-icon, .tab-favicon, .tab-lead-spinner');
+    const isLoading = Boolean(tab.isLoading);
+    const desiredFav = tab.faviconUrl || '';
+    if (
+      existing &&
+      existing.dataset.loading === String(isLoading) &&
+      existing.dataset.favUrl === desiredFav
+    ) {
+      return;
+    }
+
+    let nextNode;
+    if (isLoading) {
+      const spinner = document.createElement('i');
+      spinner.className = 'fa-solid fa-circle-notch fa-spin tab-lead-spinner';
+      spinner.setAttribute('aria-hidden', 'true');
+      spinner.dataset.loading = 'true';
+      spinner.dataset.favUrl = desiredFav;
+      nextNode = spinner;
+    } else if (!desiredFav) {
+      nextNode = createFallbackIcon(style);
+      nextNode.dataset.loading = 'false';
+      nextNode.dataset.favUrl = '';
+    } else {
+      const img = document.createElement('img');
+      img.className = 'tab-favicon';
+      img.src = desiredFav;
+      img.alt = '';
+      img.dataset.loading = 'false';
+      img.dataset.favUrl = desiredFav;
+      img.onerror = () => {
+        const fb = createFallbackIcon(style);
+        fb.dataset.loading = 'false';
+        fb.dataset.favUrl = desiredFav;
+        img.replaceWith(fb);
+      };
+      nextNode = img;
+    }
+
+    if (existing) {
+      existing.replaceWith(nextNode);
+    } else {
+      el.prepend(nextNode);
+    }
+  }
+
+  function buildTabElement(tab, index) {
+    const style = roleStyle(tab);
+    const el = document.createElement('div');
+    el.dataset.tabId = tab.id;
+    el.dataset.tabIndex = String(index);
+    el.setAttribute('role', 'tab');
+    el.draggable = true;
+
+    el.addEventListener('click', () => switchTab(el.dataset.tabId));
+    el.addEventListener('contextmenu', async (e) => {
+      e.preventDefault();
+      await invoke('show_tab_context_menu', {
+        tabId: el.dataset.tabId,
+        x: e.clientX,
+        y: e.clientY
+      });
+    });
+    el.addEventListener('keydown', (e) => {
+      const curIdx = Number(el.dataset.tabIndex);
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        switchTab(el.dataset.tabId);
+      } else if (e.key === 'ArrowRight' && currentState.tabs.length > 1) {
+        e.preventDefault();
+        const next = currentState.tabs[(curIdx + 1) % currentState.tabs.length];
+        switchTab(next.id);
+      } else if (e.key === 'ArrowLeft' && currentState.tabs.length > 1) {
+        e.preventDefault();
+        const prev = currentState.tabs[(curIdx - 1 + currentState.tabs.length) % currentState.tabs.length];
+        switchTab(prev.id);
+      }
+    });
+    el.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        closeTab(el.dataset.tabId);
+      }
+    });
+    el.addEventListener('dragstart', () => {
+      dragFromIndex = Number(el.dataset.tabIndex);
+    });
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      el.classList.add('drag-over');
+    });
+    el.addEventListener('dragleave', () => {
+      el.classList.remove('drag-over');
+    });
+    el.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      const dropIndex = Number(el.dataset.tabIndex);
+      if (dragFromIndex !== null && dragFromIndex !== dropIndex) {
+        await invoke('reorder_tab', { fromIndex: dragFromIndex, toIndex: dropIndex });
+      }
+      dragFromIndex = null;
+    });
+
+    const leadIcon = createFallbackIcon(style);
+    leadIcon.dataset.favUrl = '';
+
+    const title = document.createElement('span');
+    title.className = 'tab-title';
+
+    const badge = document.createElement('span');
+    badge.className = `tab-role ${style.cls}`;
+
+    const sleepIcon = document.createElement('i');
+    sleepIcon.className = 'fa-solid fa-moon tab-sleep-icon';
+    sleepIcon.setAttribute('aria-hidden', 'true');
+    sleepIcon.hidden = true;
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'tab-close';
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeTab(el.dataset.tabId);
+    });
+    const closeIcon = document.createElement('i');
+    closeIcon.className = 'fa-solid fa-xmark';
+    closeIcon.setAttribute('aria-hidden', 'true');
+    close.appendChild(closeIcon);
+
+    el.append(leadIcon, title, badge, sleepIcon, close);
+    return el;
+  }
+
+  function updateTabElement(el, tab, index) {
+    const style = roleStyle(tab);
+    const isActive = tab.id === currentState.activeTabId;
+    el.dataset.tabIndex = String(index);
+    el.className = 'tab' + (isActive ? ' active' : '') + (tab.isSleeping ? ' sleeping' : '');
+    el.setAttribute('aria-selected', String(isActive));
+    el.tabIndex = isActive ? 0 : -1;
+
+    syncTabLeadIcon(el, tab, style);
+
+    const badge = el.querySelector('.tab-role');
+    badge.className = `tab-role ${style.cls}`;
+    badge.style.backgroundColor = style.color;
+    badge.textContent = style.short;
+    badge.title = style.label;
+
+    const title = el.querySelector('.tab-title');
+    title.textContent = tab.title && tab.title !== 'about:blank' ? tab.title : t('tabDefault');
+    title.title = tab.title || tab.url;
+
+    const sleepIcon = el.querySelector('.tab-sleep-icon');
+    sleepIcon.hidden = !tab.isSleeping;
+    sleepIcon.title = t('sleeping');
+
+    const close = el.querySelector('.tab-close');
+    close.setAttribute('aria-label', t('closeTab'));
+    close.title = t('closeTabTooltip');
+  }
+
+  function render() {
+    applyTheme();
+    applyStaticTranslations();
+
+    const mgrBtn = document.getElementById('profileMgrBtn');
+    if (mgrBtn) {
+      mgrBtn.classList.toggle('active', Boolean(currentState.profilePanelOpen));
+    }
+
+    const dlBtn = document.getElementById('downloadsBtn');
+    if (dlBtn) {
+      dlBtn.classList.toggle('active', Boolean(currentState.downloadPanelOpen));
+    }
+    const dlDot = document.getElementById('dlActiveDot');
+    if (dlDot) {
+      dlDot.hidden = !(currentState.downloads || []).some((d) => d.status === 'inProgress');
+    }
+
+    const awakeCount = typeof currentState.activeAwakeCount === 'number'
+      ? currentState.activeAwakeCount
+      : currentState.tabs.filter((tab) => !tab.isSleeping).length;
+    const awakeBtn = document.getElementById('awakeWarnBtn');
+    if (awakeBtn) {
+      awakeBtn.hidden = awakeCount <= 12;
+      document.getElementById('awakeWarnText').textContent = `${awakeCount} ${t('awakeWarnSuffix')}`;
+    }
+
+    const updBtn = document.getElementById('updateReadyBtn');
+    if (updBtn) {
+      updBtn.hidden = !Boolean(lastUpdateCheck && lastUpdateCheck.available);
+    }
+
+    const container = document.getElementById('tabs');
+    const nextIds = currentState.tabs.map(tab => tab.id).join(',');
+    if (nextIds !== lastRenderedIds) {
+      container.innerHTML = '';
+      currentState.tabs.forEach((tab, index) => {
+        const el = buildTabElement(tab, index);
+        updateTabElement(el, tab, index);
+        container.appendChild(el);
+      });
+      lastRenderedIds = nextIds;
+    } else {
+      currentState.tabs.forEach((tab, index) => {
+        const el = container.children[index];
+        if (el) updateTabElement(el, tab, index);
+      });
+    }
+
+    const activeIndex = currentState.tabs.findIndex(tab => tab.id === currentState.activeTabId);
+    if (activeIndex >= 0 && container.children[activeIndex]) {
+      container.children[activeIndex].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    const activeTab = activeIndex >= 0 ? currentState.tabs[activeIndex] : null;
+    const urlInput = document.getElementById('urlInput');
+    const backBtn = document.getElementById('backBtn');
+    const forwardBtn = document.getElementById('forwardBtn');
+    const reloadBtn = document.getElementById('reloadBtn');
+    const reloadIcon = document.getElementById('reloadIcon');
+
+    if (activeTab) {
+      if (document.activeElement !== urlInput) {
+        urlInput.value = activeTab.url === 'about:blank' ? '' : activeTab.url;
+      }
+      updateProtocolIcon(activeTab.url, activeTab.hasCertWarning);
+      backBtn.disabled = !activeTab.canGoBack;
+      forwardBtn.disabled = !activeTab.canGoForward;
+
+      if (activeTab.isLoading) {
+        reloadIcon.className = 'fa-solid fa-xmark';
+        reloadBtn.title = t('stop');
+        reloadBtn.setAttribute('aria-label', t('stop'));
+      } else {
+        reloadIcon.className = 'fa-solid fa-rotate-right';
+        reloadBtn.title = t('reloadTooltip');
+        reloadBtn.setAttribute('aria-label', t('reload'));
+      }
+    }
+  }
+
+  async function openTab(profileKey, isEphemeral) {
+    await invoke('create_tab', { profileKey, isEphemeral, url: null });
+  }
+
+  async function openTabWithActiveRole() {
+    const activeTab = currentState.tabs.find(tab => tab.id === currentState.activeTabId);
+    if (activeTab) {
+      return openTab(activeTab.isEphemeral ? 'ephemeral' : activeTab.profileId, activeTab.isEphemeral);
+    }
+    return openTab('ephemeral', true);
+  }
+
+  async function switchTab(tabId) {
+    await invoke('switch_tab', { tabId });
+  }
+
+  async function closeTab(tabId) {
+    await invoke('close_tab', { tabId });
+  }
+
+  async function navigateUrl() {
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) return;
+    await invoke('navigate_active_tab', { url });
+  }
+
+  async function goBack() { await invoke('go_back_active_tab'); }
+  async function goForward() { await invoke('go_forward_active_tab'); }
+  async function goHome() { await invoke('go_home_active_tab'); }
+
+  async function reloadOrStop() {
+    const activeTab = currentState.tabs.find(tab => tab.id === currentState.activeTabId);
+    if (activeTab && activeTab.isLoading) {
+      await invoke('stop_active_tab');
+    } else {
+      await invoke('reload_active_tab');
+    }
+  }
+
+  async function openDevtools() {
+    await invoke('open_active_devtools');
+  }
+
+  async function openNewTabMenu() {
+    const rect = document.getElementById('newTabBtn').getBoundingClientRect();
+    await invoke('show_new_tab_menu', { x: rect.left, y: rect.bottom });
+  }
+
+  async function openAppMenu() {
+    const rect = document.getElementById('menuBtn').getBoundingClientRect();
+    await invoke('show_app_menu', { x: rect.right, y: rect.bottom });
+  }
+
+  async function openOverflowMenu() {
+    await invoke('show_tab_overflow_menu');
+  }
+
+  async function toggleProfilePanel() {
+    await invoke('toggle_profile_panel');
+  }
+
+  async function toggleDownloadPanel() {
+    await invoke('toggle_download_panel');
+  }
+
+  async function sleepInactiveTabs() {
+    await invoke('sleep_inactive_tabs');
+  }
+
+  function renderModalColorRow() {
+    const row = document.getElementById('newProfileColorRow');
+    if (!row) return;
+    row.innerHTML = '';
+    const presets = currentState.colorPresets || [];
+    presets.forEach((hex) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'swatch-btn' + (selectedModalColor.toLowerCase() === hex.toLowerCase() ? ' selected' : '');
+      btn.style.backgroundColor = hex;
+      btn.setAttribute('aria-label', hex);
+      if (selectedModalColor.toLowerCase() === hex.toLowerCase()) {
+        btn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i>';
+      }
+      btn.addEventListener('click', () => {
+        selectedModalColor = hex;
+        renderModalColorRow();
+      });
+      row.appendChild(btn);
+    });
+  }
+
+  async function openNewProfileModal() {
+    const backdrop = document.getElementById('profileModalBackdrop');
+    const input = document.getElementById('newProfileNameInput');
+    const err = document.getElementById('newProfileError');
+
+    err.textContent = '';
+    err.hidden = true;
+    input.value = '';
+    const presets = currentState.colorPresets || [];
+    if (presets.length > 0) {
+      selectedModalColor = presets[currentState.profiles.length % presets.length];
+    }
+    renderModalColorRow();
+    document.body.classList.add('modal-open');
+    backdrop.hidden = false;
+
+    await invoke('set_shell_overlay_open', { open: true });
+    if (currentWebview && !document.hasFocus()) {
+      await currentWebview.setFocus().catch(() => {});
+    }
+    input.focus();
+  }
+
+  async function closeNewProfileModal() {
+    const backdrop = document.getElementById('profileModalBackdrop');
+    backdrop.hidden = true;
+    document.body.classList.remove('modal-open');
+    await invoke('set_shell_overlay_open', { open: false });
+  }
+
+  function renderAboutInfo() {
+    const metaEl = document.getElementById('aboutMetaLine');
+    const dirEl = document.getElementById('aboutProfilesDirBox');
+    const statusEl = document.getElementById('aboutUpdateStatusBox');
+    const installBtn = document.getElementById('installUpdateBtn');
+
+    if (cachedAppInfo) {
+      metaEl.textContent = `${cachedAppInfo.appName} v${cachedAppInfo.version} | WebView2 ${cachedAppInfo.webview2Version} | DevTools Ready`;
+      dirEl.textContent = cachedAppInfo.profilesDir || '-';
+    }
+
+    if (!lastUpdateCheck) {
+      statusEl.textContent = t('updateIdleStatus');
+      installBtn.hidden = true;
+    } else if (lastUpdateCheck.checking) {
+      statusEl.textContent = t('updateCheckingStatus');
+      installBtn.hidden = true;
+    } else if (lastUpdateCheck.available) {
+      const notes = lastUpdateCheck.releaseNotes ? ` | ${lastUpdateCheck.releaseNotes}` : '';
+      statusEl.textContent = `${t('updateAvailableStatus')} v${lastUpdateCheck.latestVersion}${notes}`;
+      installBtn.hidden = false;
+    } else if (lastUpdateCheck.error) {
+      statusEl.textContent = lastUpdateCheck.error;
+      installBtn.hidden = true;
+    } else {
+      statusEl.textContent = `${t('updateUpToDateStatus')} (v${lastUpdateCheck.currentVersion})`;
+      installBtn.hidden = true;
+    }
+  }
+
+  async function openAboutModal() {
+    document.getElementById('profileModalBackdrop').hidden = true;
+    const backdrop = document.getElementById('aboutModalBackdrop');
+    document.body.classList.add('modal-open');
+    backdrop.hidden = false;
+
+    cachedAppInfo = await invoke('get_app_info');
+    renderAboutInfo();
+    await invoke('set_shell_overlay_open', { open: true });
+    if (currentWebview && !document.hasFocus()) {
+      await currentWebview.setFocus().catch(() => {});
+    }
+  }
+
+  async function closeAboutModal() {
+    document.getElementById('aboutModalBackdrop').hidden = true;
+    document.body.classList.remove('modal-open');
+    await invoke('set_shell_overlay_open', { open: false });
+  }
+
+  async function checkForUpdatesNow() {
+    const checkBtn = document.getElementById('checkUpdatesBtn');
+    checkBtn.disabled = true;
+    lastUpdateCheck = { checking: true };
+    renderAboutInfo();
+    try {
+      lastUpdateCheck = await invoke('check_for_updates');
+    } catch (err) {
+      lastUpdateCheck = { available: false, error: String(err) };
+    } finally {
+      checkBtn.disabled = false;
+      renderAboutInfo();
+      render();
+    }
+  }
+
+  async function installUpdateNow() {
+    const installBtn = document.getElementById('installUpdateBtn');
+    const statusEl = document.getElementById('aboutUpdateStatusBox');
+    installBtn.disabled = true;
+    statusEl.textContent = t('updateInstallingStatus');
+    try {
+      await invoke('install_available_update');
+    } catch (err) {
+      statusEl.textContent = String(err);
+      installBtn.disabled = false;
+    }
+  }
+
+  async function submitNewProfile(e) {
+    e.preventDefault();
+    const input = document.getElementById('newProfileNameInput');
+    const err = document.getElementById('newProfileError');
+    const raw = input.value.trim();
+
+    let validationErr = '';
+    if (!raw) {
+      validationErr = t('errProfileEmpty');
+    } else if (!/[a-zA-Z0-9]/.test(raw)) {
+      validationErr = t('errProfileAlpha');
+    } else if (raw.toLowerCase() === 'ephemeral') {
+      validationErr = t('errProfileReserved');
+    } else {
+      const duplicate = (currentState.profiles || []).some(
+        (existing) => (existing.name || '').toLowerCase() === raw.toLowerCase()
+      );
+      if (duplicate) {
+        validationErr = t('errProfileDuplicate');
+      }
+    }
+
+    if (validationErr) {
+      err.textContent = validationErr;
+      err.hidden = false;
+      input.focus();
+      return;
+    }
+
+    try {
+      await invoke('create_tab_with_new_profile', { profileName: raw, color: selectedModalColor });
+      document.getElementById('profileModalBackdrop').hidden = true;
+      document.body.classList.remove('modal-open');
+    } catch (backendErr) {
+      err.textContent = String(backendErr);
+      err.hidden = false;
+      input.focus();
+    }
+  }
+
+  async function cycleTheme() {
+    const order = ['system', 'dark', 'light'];
+    const cur = currentState.preferences?.theme || 'system';
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    await invoke('set_preferences', {
+      preferences: { ...currentState.preferences, theme: next }
+    });
+  }
+
+  async function toggleLanguage() {
+    const cur = currentState.preferences?.language || 'id';
+    const next = cur === 'id' ? 'en' : 'id';
+    await invoke('set_preferences', {
+      preferences: { ...currentState.preferences, language: next }
+    });
+  }
+
+  async function handleShortcut(action) {
+    if (action === 'new_tab') return openTabWithActiveRole();
+    if (action === 'new_ephemeral_tab') return openTab('ephemeral', true);
+    if (action === 'close_tab' && currentState.activeTabId) return closeTab(currentState.activeTabId);
+    if (action === 'reload_tab') return invoke('reload_active_tab');
+    if (action === 'toggle_devtools') return openDevtools();
+    if (action === 'focus_address_bar') {
+      if (currentWebview && !document.hasFocus()) {
+        await currentWebview.setFocus();
+      }
+      const inp = document.getElementById('urlInput');
+      inp.focus();
+      inp.select();
+      return;
+    }
+    if ((action === 'next_tab' || action === 'prev_tab') && currentState.tabs.length > 1) {
+      const idx = currentState.tabs.findIndex(tab => tab.id === currentState.activeTabId);
+      const delta = action === 'next_tab' ? 1 : -1;
+      const next = currentState.tabs[(idx + delta + currentState.tabs.length) % currentState.tabs.length];
+      return switchTab(next.id);
+    }
+  }
+
+  function bindToolbarEvents() {
+    document.getElementById('profileMgrBtn').addEventListener('click', toggleProfilePanel);
+    document.getElementById('downloadsBtn').addEventListener('click', toggleDownloadPanel);
+    document.getElementById('awakeWarnBtn').addEventListener('click', sleepInactiveTabs);
+    document.getElementById('updateReadyBtn').addEventListener('click', openAboutModal);
+    document.getElementById('newTabBtn').addEventListener('click', openNewTabMenu);
+    document.getElementById('overflowBtn').addEventListener('click', openOverflowMenu);
+    document.getElementById('backBtn').addEventListener('click', goBack);
+    document.getElementById('forwardBtn').addEventListener('click', goForward);
+    document.getElementById('reloadBtn').addEventListener('click', reloadOrStop);
+    document.getElementById('homeBtn').addEventListener('click', goHome);
+    document.getElementById('goBtn').addEventListener('click', navigateUrl);
+    document.getElementById('newEphemBtn').addEventListener('click', () => openTab('ephemeral', true));
+    document.getElementById('themeBtn').addEventListener('click', cycleTheme);
+    document.getElementById('langBtn').addEventListener('click', toggleLanguage);
+    document.getElementById('menuBtn').addEventListener('click', openAppMenu);
+
+    document.getElementById('newProfileForm').addEventListener('submit', submitNewProfile);
+    document.getElementById('closeProfileModalBtn').addEventListener('click', closeNewProfileModal);
+    document.getElementById('cancelProfileModalBtn').addEventListener('click', closeNewProfileModal);
+    document.getElementById('profileModalBackdrop').addEventListener('click', (e) => {
+      if (e.target.id === 'profileModalBackdrop') {
+        closeNewProfileModal();
+      }
+    });
+    document.getElementById('newProfileNameInput').addEventListener('input', () => {
+      const err = document.getElementById('newProfileError');
+      err.textContent = '';
+      err.hidden = true;
+    });
+
+    document.getElementById('closeAboutModalBtn').addEventListener('click', closeAboutModal);
+    document.getElementById('closeAboutFooterBtn').addEventListener('click', closeAboutModal);
+    document.getElementById('checkUpdatesBtn').addEventListener('click', checkForUpdatesNow);
+    document.getElementById('installUpdateBtn').addEventListener('click', installUpdateNow);
+    document.getElementById('aboutModalBackdrop').addEventListener('click', (e) => {
+      if (e.target.id === 'aboutModalBackdrop') {
+        closeAboutModal();
+      }
+    });
+
+    document.getElementById('tabs').addEventListener('wheel', (e) => {
+      if (e.deltaY !== 0) {
+        e.currentTarget.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    document.getElementById('urlInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') navigateUrl();
+    });
+
+    // Ensure child webview focus transitions cleanly when interacting with UI Shell on Windows.
+    window.addEventListener('pointerdown', () => {
+      if (currentWebview && !document.hasFocus()) {
+        currentWebview.setFocus().catch(() => {});
+      }
+    });
+
+    mediaDark.addEventListener('change', () => {
+      if ((currentState.preferences?.theme || 'system') === 'system') applyTheme();
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.getElementById('profileModalBackdrop').hidden) {
+        e.preventDefault();
+        closeNewProfileModal();
+        return;
+      }
+      if (e.key === 'Escape' && !document.getElementById('aboutModalBackdrop').hidden) {
+        e.preventDefault();
+        closeAboutModal();
+        return;
+      }
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault(); handleShortcut('new_ephemeral_tab');
+      } else if (e.ctrlKey && e.shiftKey && e.key === 'Tab') {
+        e.preventDefault(); handleShortcut('prev_tab');
+      } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault(); handleShortcut('new_tab');
+      } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'w') {
+        e.preventDefault(); handleShortcut('close_tab');
+      } else if (e.ctrlKey && !e.shiftKey && e.key === 'Tab') {
+        e.preventDefault(); handleShortcut('next_tab');
+      } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault(); handleShortcut('focus_address_bar');
+      } else if ((e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'r') || e.key === 'F5') {
+        e.preventDefault(); handleShortcut('reload_tab');
+      } else if (e.key === 'F12') {
+        e.preventDefault(); handleShortcut('toggle_devtools');
+      }
+    });
+  }
+
+  (async () => {
+    bindToolbarEvents();
+    await listen('shell-state', (e) => {
+      currentState = e.payload;
+      render();
+    });
+    await listen('shell-shortcut', (e) => handleShortcut(e.payload.action));
+    await listen('open-new-profile-modal', () => openNewProfileModal());
+    await listen('open-about-modal', () => openAboutModal());
+    await listen('update-available', (e) => {
+      lastUpdateCheck = e.payload;
+      render();
+      if (!document.getElementById('aboutModalBackdrop').hidden) {
+        renderAboutInfo();
+      }
+    });
+
+    currentState = await invoke('get_shell_state');
+    render();
+  })();
+})();

@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="id" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <title>RoleTab</title>
+  <link rel="stylesheet" href="./vendor/fontawesome/css/all.min.css" />
+  <style>
+    :root,
+    :root[data-theme="dark"] {
+      --frame-bg: #202124;
+      --toolbar-bg: #35363a;
+      --tab-hover: #2d2e32;
+      --omnibox-bg: #202124;
+      --border-subtle: #4a4d52;
+      --modal-bg: #292a2d;
+      --text-main: #e8eaed;
+      --text-muted: #9aa0a6;
+      --btn-hover: rgba(255, 255, 255, 0.1);
+      --accent-focus: #8ab4f8;
+      --primary-btn: #1a73e8;
+      --danger-text: #f28b82;
+    }
+    :root[data-theme="light"] {
+      --frame-bg: #dee1e6;
+      --toolbar-bg: #ffffff;
+      --tab-hover: #eceef1;
+      --omnibox-bg: #f1f3f4;
+      --border-subtle: #dadce0;
+      --modal-bg: #ffffff;
+      --text-main: #202124;
+      --text-muted: #5f6368;
+      --btn-hover: rgba(32, 33, 36, 0.08);
+      --accent-focus: #1a73e8;
+      --primary-btn: #1a73e8;
+      --danger-text: #c5221f;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 78px;
+      overflow: hidden;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--frame-bg);
+      color: var(--text-main);
+      user-select: none;
+    }
+    body.modal-open {
+      height: 100vh;
+    }
+    .shell {
+      display: flex;
+      flex-direction: column;
+      height: 78px;
+      width: 100%;
+    }
+    button:focus-visible,
+    .tab:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--accent-focus);
+      outline-offset: -2px;
+    }
+
+    .tab-strip {
+      display: flex;
+      align-items: flex-end;
+      height: 36px;
+      padding: 4px 8px 0 8px;
+      background: var(--frame-bg);
+      gap: 4px;
+    }
+    .strip-icon-btn.profile-mgr-btn {
+      color: var(--accent-focus);
+      font-size: 13px;
+    }
+    .strip-icon-btn.profile-mgr-btn.active {
+      background: var(--toolbar-bg);
+    }
+    .tabs-scroll {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      max-width: calc(100% - 102px);
+      scrollbar-width: none;
+    }
+    .tabs-scroll::-webkit-scrollbar { display: none; }
+
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 32px;
+      min-width: 120px;
+      max-width: 220px;
+      padding: 0 7px 0 9px;
+      border-radius: 8px 8px 0 0;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      border-left: 2px solid transparent;
+    }
+    .tab:hover {
+      background: var(--tab-hover);
+      color: var(--text-main);
+    }
+    .tab.active {
+      background: var(--toolbar-bg);
+      color: var(--text-main);
+    }
+    .tab.sleeping { opacity: 0.65; }
+    .tab.drag-over { border-left-color: var(--accent-focus); }
+
+    .tab-favicon {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      object-fit: contain;
+      flex-shrink: 0;
+    }
+    .tab-lead-spinner {
+      width: 14px;
+      font-size: 12px;
+      color: var(--accent-focus);
+      text-align: center;
+      flex-shrink: 0;
+    }
+    .tab-role {
+      font-size: 9.5px;
+      font-weight: 700;
+      line-height: 13px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #ffffff;
+      flex-shrink: 0;
+      letter-spacing: 0.02em;
+    }
+    .tab-role.admin { background: #b91c1c; }
+    .tab-role.user { background: #1d4ed8; }
+    .tab-role.ephem { background: #4b5563; }
+    .tab-role.role-c0 { background: #0f766e; }
+    .tab-role.role-c1 { background: #6d28d9; }
+    .tab-role.role-c2 { background: #b45309; }
+    .tab-role.role-c3 { background: #047857; }
+    .tab-role.role-c4 { background: #be185d; }
+    .tab-role.role-c5 { background: #1d4ed8; }
+
+    .tab-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      font-size: 12px;
+      min-width: 0;
+    }
+    .tab-sleep-icon {
+      font-size: 10px;
+      color: var(--accent-focus);
+      flex-shrink: 0;
+    }
+    .tab-sleep-icon[hidden] { display: none; }
+
+    .tab-close {
+      width: 18px;
+      height: 18px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: inherit;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      font-size: 10.5px;
+      padding: 0;
+    }
+    .tab-close:hover { background: var(--btn-hover); }
+
+    .strip-icon-btn {
+      width: 28px;
+      height: 28px;
+      margin-bottom: 2px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      font-size: 12px;
+    }
+    .strip-icon-btn:hover {
+      background: var(--tab-hover);
+      color: var(--text-main);
+    }
+    .strip-spacer { flex: 1; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 42px;
+      padding: 0 10px;
+      background: var(--toolbar-bg);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .nav-btn {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-main);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      font-size: 13px;
+    }
+    .nav-btn:hover:not(:disabled) { background: var(--btn-hover); }
+    .nav-btn:disabled {
+      color: var(--text-muted);
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .omnibox {
+      flex: 1;
+      height: 29px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border-radius: 8px;
+      background: var(--omnibox-bg);
+      border: 1px solid transparent;
+      min-width: 160px;
+    }
+    .omnibox:focus-within { border-color: var(--accent-focus); }
+    .proto-icon { font-size: 12px; flex-shrink: 0; }
+    .proto-https { color: #10b981; }
+    .proto-local { color: #0ea5e9; }
+    .proto-http { color: #d97706; }
+    .proto-warn { color: #ef4444; }
+    .proto-blank { color: var(--text-muted); }
+
+    .omnibox input {
+      flex: 1;
+      border: 0;
+      background: transparent;
+      color: var(--text-main);
+      font-size: 12.5px;
+      outline: none;
+      min-width: 0;
+    }
+
+    .toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .lang-btn {
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-main);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .lang-btn:hover { background: var(--btn-hover); }
+    .awake-pill {
+      height: 26px;
+      padding: 0 8px;
+      border: 1px solid #d97706;
+      border-radius: 8px;
+      background: rgba(217, 119, 6, 0.16);
+      color: #fbbf24;
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    :root[data-theme="light"] .awake-pill {
+      color: #92400e;
+      background: rgba(245, 158, 11, 0.18);
+    }
+    .awake-pill:hover { filter: brightness(1.08); }
+    .awake-pill[hidden] { display: none; }
+    .nav-btn.active { background: var(--btn-hover); color: var(--accent-focus); }
+    .dl-btn { position: relative; }
+    .dl-active-dot {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-focus);
+    }
+    .dl-active-dot[hidden] { display: none; }
+    .update-pill {
+      height: 26px;
+      padding: 0 8px;
+      border: 1px solid #1a73e8;
+      border-radius: 8px;
+      background: rgba(26, 115, 232, 0.16);
+      color: var(--accent-focus);
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .update-pill:hover { filter: brightness(1.08); }
+    .update-pill[hidden] { display: none; }
+    .about-meta-box {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--omnibox-bg);
+      font-size: 11.5px;
+      line-height: 1.45;
+      color: var(--text-main);
+      word-break: break-word;
+    }
+
+    /* Modal Backdrop & Compact Profile Dialog (radius <= 12px) */
+    .modal-backdrop {
+      position: fixed;
+      inset: 78px 0 0 0;
+      background: rgba(16, 18, 22, 0.55);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 64px;
+      z-index: 50;
+    }
+    .modal-backdrop[hidden] { display: none; }
+
+    .modal-card {
+      width: 100%;
+      max-width: 380px;
+      margin: 0 16px;
+      background: var(--modal-bg);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 16px 18px;
+      color: var(--text-main);
+      user-select: text;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .modal-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .modal-body {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .modal-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    .modal-input {
+      width: 100%;
+      height: 36px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--omnibox-bg);
+      color: var(--text-main);
+      font-size: 13px;
+    }
+    .modal-input:focus {
+      border-color: var(--accent-focus);
+      outline: none;
+    }
+    .modal-hint {
+      margin: 2px 0 0 0;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+    .modal-error {
+      margin: 2px 0 0 0;
+      font-size: 11.5px;
+      color: var(--danger-text);
+      font-weight: 600;
+    }
+    .modal-error[hidden] { display: none; }
+
+    .modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    .swatch-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .swatch-btn {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-size: 10px;
+      padding: 0;
+    }
+    .swatch-btn.selected {
+      border-color: var(--text-main);
+    }
+    .btn {
+      height: 32px;
+      padding: 0 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      border: 1px solid transparent;
+    }
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--border-subtle);
+      color: var(--text-main);
+    }
+    .btn-ghost:hover { background: var(--btn-hover); }
+    .btn-primary {
+      background: var(--primary-btn);
+      color: #ffffff;
+    }
+    .btn-primary:hover { filter: brightness(1.08); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="tab-strip">
+      <button type="button" class="strip-icon-btn profile-mgr-btn" id="profileMgrBtn">
+        <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
+      </button>
+      <div class="tabs-scroll" id="tabs" role="tablist" aria-label="Browser Tabs"></div>
+      <button type="button" class="strip-icon-btn" id="newTabBtn">
+        <i class="fa-solid fa-plus" aria-hidden="true"></i>
+      </button>
+      <div class="strip-spacer"></div>
+      <button type="button" class="strip-icon-btn" id="overflowBtn">
+        <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+      </button>
+    </div>
+
+    <div class="toolbar">
+      <button type="button" class="nav-btn" id="backBtn">
+        <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+      </button>
+      <button type="button" class="nav-btn" id="forwardBtn">
+        <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
+      </button>
+      <button type="button" class="nav-btn" id="reloadBtn">
+        <i class="fa-solid fa-rotate-right" id="reloadIcon" aria-hidden="true"></i>
+      </button>
+      <button type="button" class="nav-btn" id="homeBtn">
+        <i class="fa-solid fa-house" aria-hidden="true"></i>
+      </button>
+
+      <div class="omnibox">
+        <i class="fa-solid fa-compass proto-icon proto-blank" id="protoIcon" aria-hidden="true"></i>
+        <input id="urlInput" type="text" />
+        <button type="button" class="nav-btn" id="goBtn">
+          <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <div class="toolbar-actions">
+        <button type="button" class="awake-pill" id="awakeWarnBtn" hidden>
+          <i class="fa-solid fa-moon" aria-hidden="true"></i>
+          <span id="awakeWarnText">0 tab aktif</span>
+        </button>
+        <button type="button" class="update-pill" id="updateReadyBtn" hidden>
+          <i class="fa-solid fa-circle-arrow-up" aria-hidden="true"></i>
+          <span id="updateReadyLabel">Update</span>
+        </button>
+        <button type="button" class="nav-btn dl-btn" id="downloadsBtn">
+          <i class="fa-solid fa-download" aria-hidden="true"></i>
+          <span class="dl-active-dot" id="dlActiveDot" hidden></span>
+        </button>
+        <button type="button" class="nav-btn" id="newEphemBtn">
+          <i class="fa-solid fa-user-secret" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="nav-btn" id="themeBtn">
+          <i class="fa-solid fa-circle-half-stroke" id="themeIcon" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="lang-btn" id="langBtn">ID</button>
+        <button type="button" class="nav-btn" id="menuBtn">
+          <i class="fa-solid fa-bars" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="profileModalBackdrop" hidden>
+    <form class="modal-card" id="newProfileForm" novalidate>
+      <div class="modal-header">
+        <h2 class="modal-title">
+          <i class="fa-solid fa-user-plus" aria-hidden="true"></i>
+          <span id="newProfileModalTitle">Buat Profil Baru</span>
+        </h2>
+        <button type="button" class="nav-btn" id="closeProfileModalBtn">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="modal-label" id="newProfileInputLabel" for="newProfileNameInput">Nama Profil</label>
+        <input class="modal-input" id="newProfileNameInput" type="text" maxlength="40" autocomplete="off" />
+        <label class="modal-label" id="newProfileColorLabel" style="margin-top: 6px;">Warna Label</label>
+        <div class="swatch-row" id="newProfileColorRow"></div>
+        <p class="modal-error" id="newProfileError" hidden></p>
+        <p class="modal-hint" id="newProfileHint"></p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" id="cancelProfileModalBtn">Batal</button>
+        <button type="submit" class="btn btn-primary" id="submitProfileModalBtn">Buat Profil</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="modal-backdrop" id="aboutModalBackdrop" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
+      <div class="modal-header">
+        <h2 class="modal-title">
+          <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+          <span id="aboutModalTitle">Tentang RoleTab</span>
+        </h2>
+        <button type="button" class="nav-btn" id="closeAboutModalBtn">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="about-meta-box" id="aboutMetaLine">-</div>
+        <label class="modal-label" id="aboutProfilesDirLabel" style="margin-top: 4px;">Folder Profil Lokal</label>
+        <div class="about-meta-box" id="aboutProfilesDirBox">-</div>
+        <div class="about-meta-box" id="aboutUpdateStatusBox"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" id="closeAboutFooterBtn">Tutup</button>
+        <button type="button" class="btn btn-ghost" id="checkUpdatesBtn">
+          <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
+          <span id="checkUpdatesLabel">Cek Update</span>
+        </button>
+        <button type="button" class="btn btn-primary" id="installUpdateBtn" hidden>Pasang &amp; Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./i18n.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

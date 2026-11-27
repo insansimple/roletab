@@ -1,0 +1,66 @@
+name: Release Windows (NSIS & Auto-Updater)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatiniki/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: npm ci
+
+      - name: Run full unit & QA verification suite
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Windows NSIS installer & updater artifacts
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          tagName: v__VERSION__
+          releaseName: 'RoleTab v__VERSION__'
+          releaseBody: 'RoleTab MultiRole Browser Windows release (NSIS + signed updater artifacts).'
+          releaseDraft: true
+          prerelease: false
+
+      # Optional Azure Trusted Signing / EV Code Signing step when signing secrets are configured:
+      - name: Sign Windows NSIS installer with Azure Trusted Signing
+        if: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CODE_SIGNING_ENDPOINT != '' }}
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+          code-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          files-folder: src-tauri/target/release/bundle/nsis
+          files-folder-filter: '*.exe'
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
