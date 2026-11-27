@@ -1,4 +1,5 @@
 use serde::Serialize;
+#[cfg(windows)]
 use tauri::{AppHandle, Emitter, Manager, Runtime, Webview};
 
 /// Payload emitted to `ui-shell` when a keyboard shortcut is intercepted inside a child webview.
@@ -10,6 +11,7 @@ pub struct ShortcutEventPayload {
 }
 
 /// Payload emitted to `ui-shell` when `ICoreWebView2_3::TrySuspend` completes.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuspendResultPayload {
@@ -33,6 +35,7 @@ pub struct NativeNavState {
 }
 
 /// Maps `COREWEBVIEW2_PROCESS_FAILED_KIND` integer codes to RoleTab's structured recovery kinds.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn classify_process_failed_kind(kind: i32) -> crate::state::TabCrashKind {
     match kind {
         0 => crate::state::TabCrashKind::BrowserProcessExited,
@@ -76,11 +79,13 @@ pub fn read_process_working_set_mb(_pid: u32) -> Option<u64> {
 }
 
 /// Maps `COREWEBVIEW2_WEB_ERROR_STATUS` integer values `1..=5` (TLS/certificate errors).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_certificate_web_error(status: i32) -> bool {
     matches!(status, 1..=5)
 }
 
 /// Maps a Win32 virtual key + modifier state to a RoleTab shortcut action.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn map_accelerator_key(vk: u32, ctrl: bool, shift: bool) -> Option<&'static str> {
     const VK_TAB: u32 = 0x09;
     const VK_0: u32 = 0x30;
@@ -511,15 +516,6 @@ pub fn attach_native_hooks<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(windows))]
-pub fn attach_native_hooks<R: Runtime>(
-    _webview: &Webview<R>,
-    _app: AppHandle<R>,
-    _tab_id: String,
-) -> Result<(), String> {
-    Ok(())
-}
-
 /// Navigates backward in the child webview's WebView2 history.
 #[cfg(windows)]
 pub fn go_back_webview<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
@@ -530,11 +526,6 @@ pub fn go_back_webview<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())
-}
-
-#[cfg(not(windows))]
-pub fn go_back_webview<R: Runtime>(_webview: &Webview<R>) -> Result<(), String> {
-    Ok(())
 }
 
 /// Navigates forward in the child webview's WebView2 history.
@@ -549,11 +540,6 @@ pub fn go_forward_webview<R: Runtime>(webview: &Webview<R>) -> Result<(), String
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(windows))]
-pub fn go_forward_webview<R: Runtime>(_webview: &Webview<R>) -> Result<(), String> {
-    Ok(())
-}
-
 /// Stops an in-progress navigation in the child webview.
 #[cfg(windows)]
 pub fn stop_webview<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
@@ -564,11 +550,6 @@ pub fn stop_webview<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())
-}
-
-#[cfg(not(windows))]
-pub fn stop_webview<R: Runtime>(_webview: &Webview<R>) -> Result<(), String> {
-    Ok(())
 }
 
 /// Calls `ICoreWebView2_3::TrySuspend` on a hidden child webview and emits completion to `ui-shell`.
@@ -651,15 +632,6 @@ pub fn suspend_webview<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(windows))]
-pub fn suspend_webview<R: Runtime>(
-    _webview: &Webview<R>,
-    _app: AppHandle<R>,
-    _tab_id: String,
-) -> Result<(), String> {
-    Ok(())
-}
-
 /// Calls `ICoreWebView2_3::Resume` on a previously suspended child webview.
 #[cfg(windows)]
 pub fn resume_webview<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
@@ -677,11 +649,6 @@ pub fn resume_webview<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(windows))]
-pub fn resume_webview<R: Runtime>(_webview: &Webview<R>) -> Result<(), String> {
-    Ok(())
-}
-
 /// Sets the per-tab WebView2 controller zoom factor (`0.25..=3.0`).
 #[cfg(windows)]
 pub fn set_webview_zoom<R: Runtime>(webview: &Webview<R>, factor: f64) -> Result<(), String> {
@@ -691,11 +658,6 @@ pub fn set_webview_zoom<R: Runtime>(webview: &Webview<R>, factor: f64) -> Result
             let _ = platform_wv.controller().SetZoomFactor(clamped);
         })
         .map_err(|e| e.to_string())
-}
-
-#[cfg(not(windows))]
-pub fn set_webview_zoom<R: Runtime>(_webview: &Webview<R>, _factor: f64) -> Result<(), String> {
-    Ok(())
 }
 
 /// Runs in-page Find-in-Page (`window.find`) inside the child webview via `ExecuteScript`
@@ -751,15 +713,6 @@ pub fn find_in_webview<R: Runtime>(
         .unwrap_or(0))
 }
 
-#[cfg(not(windows))]
-pub fn find_in_webview<R: Runtime>(
-    _webview: &Webview<R>,
-    _query: &str,
-    _forward: bool,
-) -> Result<usize, String> {
-    Ok(0)
-}
-
 /// Synchronously updates a child webview's WebView2 bounds and Win32 HWND position/size
 /// without `SWP_ASYNCWINDOWPOS`, eliminating right-edge black blink during resizes/slides.
 #[cfg(windows)]
@@ -804,24 +757,6 @@ pub fn set_bounds_sync_native<R: Runtime>(
             let _ = ctrl.NotifyParentWindowPositionChanged();
         })
         .map_err(|e| e.to_string())
-}
-
-#[cfg(not(windows))]
-pub fn set_bounds_sync_native<R: Runtime>(
-    webview: &Webview<R>,
-    pos: tauri::PhysicalPosition<i32>,
-    size: tauri::PhysicalSize<u32>,
-    _bring_to_top: bool,
-    ensure_visible: bool,
-) -> Result<(), String> {
-    let _ = webview.set_bounds(tauri::Rect {
-        position: pos.into(),
-        size: size.into(),
-    });
-    if ensure_visible {
-        let _ = webview.show();
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -886,9 +821,12 @@ mod tests {
             TabCrashKind::RenderProcessExited
         );
 
-        let mb = read_process_working_set_mb(std::process::id())
-            .expect("current test process working set must be readable");
-        assert!(mb > 0);
+        #[cfg(windows)]
+        {
+            let mb = read_process_working_set_mb(std::process::id())
+                .expect("current test process working set must be readable");
+            assert!(mb > 0);
+        }
         assert_eq!(read_process_working_set_mb(0), None);
     }
 }
