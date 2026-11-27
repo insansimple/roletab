@@ -21,6 +21,7 @@ pub struct SuspendResultPayload {
 }
 
 /// Real-time navigation state pushed from native WebView2 events.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Default)]
 pub struct NativeNavState {
     pub tab_id: String,

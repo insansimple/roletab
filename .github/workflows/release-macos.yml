@@ -36,7 +36,36 @@ jobs:
       - name: Run full Rust unit & QA suite
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build Universal macOS App, DMG & Updater Artifacts
+      - name: Check optional Apple signing secrets
+        id: apple_sign
+        env:
+          CERT_VAL: ${{ secrets.APPLE_CERTIFICATE }}
+          PASS_VAL: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -n "$CERT_VAL" ] && [ -n "$PASS_VAL" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Universal macOS App, DMG & Updater Artifacts (Unsigned)
+        if: steps.apple_sign.outputs.enabled != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          args: --bundles app,dmg,updater --target universal-apple-darwin
+          tagName: v__VERSION__
+          releaseName: 'RoleTab v__VERSION__'
+          releaseBody: 'RoleTab MultiRole Browser release (Windows NSIS + macOS Universal DMG).'
+          releaseDraft: true
+          prerelease: false
+
+      - name: Build & Sign Universal macOS App, DMG & Updater Artifacts
+        if: steps.apple_sign.outputs.enabled == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

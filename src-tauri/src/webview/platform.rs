@@ -40,6 +40,7 @@ pub trait PlatformWebviewController: Send + Sync {
         forward: bool,
     ) -> Result<usize, String>;
 
+    #[allow(dead_code)]
     fn read_process_memory_mb(&self, pid: u32) -> Option<u64>;
 
     fn set_bounds_sync<R: Runtime>(

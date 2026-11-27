@@ -1,12 +1,15 @@
 /// Minimum supported Edge WebView2 major version.
+#[cfg(any(windows, test))]
 pub const MIN_WEBVIEW2_MAJOR: u32 = 109;
 
 /// Parses the major version number from a WebView2 version string (e.g., `"131.0.2903.112"`).
+#[cfg(any(windows, test))]
 pub fn parse_webview2_major(version: &str) -> Option<u32> {
     version.trim().split('.').next()?.parse::<u32>().ok()
 }
 
 /// Validates that an installed WebView2 version string satisfies `min_major`.
+#[cfg(any(windows, test))]
 pub fn validate_webview2_version(version: &str, min_major: u32) -> Result<u32, String> {
     let major = parse_webview2_major(version)
         .ok_or_else(|| format!("Versi WebView2 Runtime tidak terbaca: '{version}'"))?;

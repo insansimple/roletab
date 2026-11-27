@@ -352,6 +352,7 @@ pub fn window_label_from_webview_label(wv_label: &str) -> String {
 }
 
 /// Resolves the `ui-shell` child label currently hosting `tab_id`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn shell_label_for_tab<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> String {
     let win_label = app
         .state::<AppState>()
@@ -419,6 +420,7 @@ pub fn emit_shell_state<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// Applies native WebView2 navigation/favicon/certificate/audio/PID updates into `AppState`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn apply_native_nav_update<R: Runtime>(app: &AppHandle<R>, update: NativeNavState) {
     let state = app.state::<AppState>();
     let mut changed = false;
@@ -485,6 +487,7 @@ pub fn apply_native_nav_update<R: Runtime>(app: &AppHandle<R>, update: NativeNav
 
 /// Marks a tab (or all tabs sharing a profile when `BrowserProcessExited`) as crashed
 /// and refreshes layout so each affected window renders crash recovery without disturbing other tabs.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn apply_process_failed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, kind: TabCrashKind) {
     let state = app.state::<AppState>();
     let affected_windows: Vec<String> = {
