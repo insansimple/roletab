@@ -6,13 +6,17 @@
     profilesDir: '',
     preferences: { theme: 'system', language: 'id', defaultProfile: null },
     profiles: [],
+    workspaces: [],
     colorPresets: ['#b91c1c', '#1d4ed8', '#0f766e', '#6d28d9', '#b45309', '#047857', '#be185d', '#334155']
   };
+  let activeView = 'profiles';
   let lastSummaries = [];
   let pendingDeleteId = null;
   let pendingClearId = null;
   let editingProfileId = null;
   let editingColor = '#1d4ed8';
+  let editingProxyMode = 'direct';
+  let editingProxyAddress = '';
   let createSelectedColor = '#1d4ed8';
   let openMenuProfId = null;
   let noticeTimer = null;
@@ -32,12 +36,17 @@
 
   function applyTexts() {
     document.getElementById('panelTitle').textContent = t('profileManager');
+    document.getElementById('importProfileLabel').textContent = t('importBtn');
     document.getElementById('toggleCreateLabel').textContent = t('createProfileAction');
+    document.getElementById('tabProfilesViewBtn').textContent = t('profilesTab');
+    document.getElementById('tabWorkspacesViewBtn').textContent = t('workspacesTab');
     document.getElementById('sideCreateLabel').textContent = t('newProfileLabel');
     document.getElementById('sideCreateColorLabel').textContent = t('colorLabel');
     document.getElementById('sideProfileInput').placeholder = t('newProfilePlaceholder');
     document.getElementById('sideCreateCancelBtn').textContent = t('cancel');
     document.getElementById('sideCreateSubmitBtn').textContent = t('createProfileBtn');
+    document.getElementById('wsNameInput').placeholder = t('workspaceNamePlaceholder');
+    document.getElementById('wsSaveSubmitBtn').textContent = t('saveWorkspaceBtn');
 
     const closeBtn = document.getElementById('closePanelBtn');
     closeBtn.setAttribute('aria-label', t('closeModal'));
@@ -128,7 +137,19 @@
       pendingClearId = null;
       editingProfileId = editingProfileId === prof.id ? null : prof.id;
       editingColor = prof.color || '#1d4ed8';
+      editingProxyMode = prof.proxyMode || 'direct';
+      editingProxyAddress = prof.proxyAddress || '';
       renderSummaries(lastSummaries);
+    });
+
+    addItem('fa-file-export', t('exportBtn'), async () => {
+      try {
+        await invoke('export_profile_zip', { profileId: prof.id });
+        showNotice(t('exportedNotice'));
+        await refresh();
+      } catch (err) {
+        showNotice(String(err));
+      }
     });
 
     addItem(
@@ -248,7 +269,11 @@
 
       const meta = document.createElement('span');
       meta.className = 'profile-meta';
-      meta.textContent = `${prof.openTabCount} ${t('openTabCountSuffix')} | ${formatBytes(prof.sizeBytes)}`;
+      const proxySuffix =
+        prof.proxyMode && prof.proxyMode !== 'direct' && prof.proxyAddress
+          ? ` | ${prof.proxyMode.toUpperCase()} ${prof.proxyAddress}`
+          : '';
+      meta.textContent = `${prof.openTabCount} ${t('openTabCountSuffix')} | ${formatBytes(prof.sizeBytes)}${proxySuffix}`;
       meta.title = prof.path;
 
       info.append(nameRow, meta);
@@ -305,6 +330,40 @@
         errEl.className = 'create-error';
         errEl.hidden = true;
 
+        const proxyLabel = document.createElement('label');
+        proxyLabel.className = 'create-label';
+        proxyLabel.textContent = t('proxyLabel');
+
+        const proxyRow = document.createElement('div');
+        proxyRow.className = 'proxy-row';
+
+        const proxySelect = document.createElement('select');
+        proxySelect.className = 'proxy-select';
+        [
+          { val: 'direct', txt: t('proxyDirect') },
+          { val: 'http', txt: t('proxyHttp') },
+          { val: 'socks5', txt: t('proxySocks5') }
+        ].forEach((opt) => {
+          const o = document.createElement('option');
+          o.value = opt.val;
+          o.textContent = opt.txt;
+          proxySelect.appendChild(o);
+        });
+        proxySelect.value = editingProxyMode;
+
+        const proxyInput = document.createElement('input');
+        proxyInput.className = 'create-input';
+        proxyInput.type = 'text';
+        proxyInput.placeholder = t('proxyPlaceholder');
+        proxyInput.value = editingProxyAddress;
+        proxyInput.disabled = editingProxyMode === 'direct';
+
+        proxySelect.addEventListener('change', () => {
+          editingProxyMode = proxySelect.value;
+          proxyInput.disabled = editingProxyMode === 'direct';
+        });
+        proxyRow.append(proxySelect, proxyInput);
+
         const formActions = document.createElement('div');
         formActions.className = 'create-actions';
 
@@ -336,7 +395,9 @@
             await invoke('update_profile', {
               profileId: prof.id,
               name: nextName,
-              color: editingColor
+              color: editingColor,
+              proxyMode: proxySelect.value,
+              proxyAddress: proxySelect.value === 'direct' ? null : proxyInput.value.trim()
             });
             editingProfileId = null;
             await refresh();
@@ -347,7 +408,7 @@
         });
 
         formActions.append(cancelEditBtn, saveEditBtn);
-        editForm.append(nameInput, swatchRow, errEl, formActions);
+        editForm.append(nameInput, swatchRow, proxyLabel, proxyRow, errEl, formActions);
         item.appendChild(editForm);
       }
 
@@ -497,15 +558,135 @@
     }
   }
 
+  function renderWorkspaces() {
+    const list = document.getElementById('workspaceList');
+    list.innerHTML = '';
+    const workspaces = currentState.workspaces || [];
+
+    if (workspaces.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.innerHTML = `<i class="fa-solid fa-layer-group" aria-hidden="true"></i><h2>${t('emptyWorkspacesTitle')}</h2><p>${t('emptyWorkspacesDesc')}</p>`;
+      list.appendChild(empty);
+      return;
+    }
+
+    workspaces.forEach((ws) => {
+      const item = document.createElement('div');
+      item.className = 'profile-item';
+
+      const top = document.createElement('div');
+      top.className = 'profile-top';
+
+      const info = document.createElement('div');
+      info.className = 'profile-info';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'profile-name';
+      nameEl.textContent = ws.name;
+
+      const meta = document.createElement('span');
+      meta.className = 'profile-meta';
+      meta.textContent = `${ws.tabs.length} ${t('workspaceTabsSuffix')}`;
+
+      info.append(nameEl, meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'profile-actions';
+
+      const launchBtn = document.createElement('button');
+      launchBtn.type = 'button';
+      launchBtn.className = 'btn btn-primary';
+      launchBtn.innerHTML = `<i class="fa-solid fa-play" aria-hidden="true"></i> ${t('launchWorkspaceBtn')}`;
+      launchBtn.addEventListener('click', () => invoke('launch_workspace', { workspaceId: ws.id }));
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'icon-btn';
+      delBtn.title = t('deleteBtn');
+      delBtn.setAttribute('aria-label', t('deleteBtn'));
+      delBtn.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+      delBtn.addEventListener('click', () => invoke('delete_workspace', { workspaceId: ws.id }));
+
+      actions.append(launchBtn, delBtn);
+      top.append(info, actions);
+
+      const badges = document.createElement('div');
+      badges.className = 'ws-badges';
+      ws.tabs.forEach((spec) => {
+        const b = document.createElement('span');
+        b.className = 'role-badge';
+        b.style.backgroundColor = spec.profileColor || '#4b5563';
+        b.textContent = spec.isEphemeral ? 'eph' : shortCode(spec.profileName);
+        b.title = `${spec.profileName} | ${spec.url}`;
+        badges.appendChild(b);
+      });
+
+      item.append(top, badges);
+      list.appendChild(item);
+    });
+  }
+
+  function syncViewTabs() {
+    const isProf = activeView === 'profiles';
+    document.getElementById('tabProfilesViewBtn').classList.toggle('active', isProf);
+    document.getElementById('tabWorkspacesViewBtn').classList.toggle('active', !isProf);
+    document.getElementById('profileList').hidden = !isProf;
+    document.getElementById('workspaceList').hidden = isProf;
+    document.getElementById('wsSaveForm').hidden = isProf;
+    document.getElementById('toggleCreateBtn').hidden = !isProf;
+    document.getElementById('importProfileBtn').hidden = !isProf;
+    if (!isProf) {
+      hideCreateForm();
+    }
+  }
+
   async function refresh() {
     applyTheme();
     applyTexts();
+    syncViewTabs();
     const summaries = await invoke('get_profile_summaries');
     renderSummaries(summaries);
+    renderWorkspaces();
   }
 
   document.getElementById('closePanelBtn').addEventListener('click', () => {
     invoke('set_profile_panel_open', { open: false });
+  });
+  document.getElementById('tabProfilesViewBtn').addEventListener('click', () => {
+    activeView = 'profiles';
+    syncViewTabs();
+  });
+  document.getElementById('tabWorkspacesViewBtn').addEventListener('click', () => {
+    activeView = 'workspaces';
+    syncViewTabs();
+    renderWorkspaces();
+  });
+  document.getElementById('importProfileBtn').addEventListener('click', async () => {
+    try {
+      const res = await invoke('import_profile_zip', { sourcePath: null });
+      if (res) {
+        showNotice(t('importedNotice'));
+        await refresh();
+      }
+    } catch (err) {
+      showNotice(String(err));
+    }
+  });
+  document.getElementById('wsSaveForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const inp = document.getElementById('wsNameInput');
+    const name = inp.value.trim();
+    if (!name) {
+      inp.focus();
+      return;
+    }
+    try {
+      await invoke('save_current_workspace', { name });
+      inp.value = '';
+    } catch (err) {
+      showNotice(String(err));
+    }
   });
   document.getElementById('toggleCreateBtn').addEventListener('click', () => {
     const form = document.getElementById('sideCreateForm');

@@ -9,8 +9,9 @@ use crate::profile::{
     build_profile_summaries, clear_closed_profile_disk_data, create_profile_record,
     delete_dir_with_retry, profile_data_dir, remove_profile_record, sanitize_profile_key,
     set_default_profile_record, sync_profiles_store, update_profile_record, ProfileRecord,
-    ProfileSummary,
+    ProfileSummary, ProxyMode,
 };
+use crate::profile_transfer::{import_profile_zip_to_dir, pick_open_zip_path};
 use crate::state::{
     save_preferences, AppPreferences, AppState, ClearProfileDataResult, DeleteProfileResult,
     DownloadStatus, Language, ShellSnapshot, TabEntry,
@@ -19,10 +20,16 @@ use crate::updater::{
     check_for_updates_async, install_pending_update_async, AppInfoSnapshot, UpdateCheckResult,
 };
 use crate::webview::{
-    bridge, close_other_tabs_sync, close_tab_internal, default_startup_profile, duplicate_tab_sync,
-    emit_shell_state, normalize_address_input, reorder_tabs_vec, set_download_panel_open_sync,
-    set_profile_panel_open_sync, sleep_inactive_tabs_sync, sleep_tab_sync, spawn_tab,
-    switch_tab_sync, sync_bounds_on_resize, DEFAULT_NEW_TAB_URL, UI_SHELL_HEIGHT,
+    adjust_active_tab_zoom_sync, bridge, close_other_tabs_sync, close_tab_internal,
+    default_startup_profile, duplicate_tab_sync, emit_shell_state, export_profile_archive_sync,
+    find_in_active_tab_sync, launch_workspace_sync, normalize_address_input, recover_tab_sync,
+    refresh_memory_metrics, reorder_tabs_vec, set_download_panel_open_sync,
+    set_find_bar_open_sync, set_monitor_panel_open_sync, set_profile_panel_open_sync,
+    sleep_inactive_tabs_sync, sleep_tab_sync, spawn_tab, switch_tab_sync, sync_bounds_on_resize,
+    toggle_tab_pin_sync, DEFAULT_NEW_TAB_URL, UI_SHELL_HEIGHT,
+};
+use crate::workspace::{
+    create_workspace_preset, delete_workspace_preset, specs_from_open_tabs, WorkspacePreset,
 };
 
 #[tauri::command]
@@ -195,6 +202,8 @@ pub fn update_profile(
     profile_id: String,
     name: String,
     color: Option<String>,
+    proxy_mode: Option<ProxyMode>,
+    proxy_address: Option<String>,
 ) -> Result<ProfileRecord, String> {
     let updated = {
         let state = app.state::<AppState>();
@@ -205,6 +214,8 @@ pub fn update_profile(
             &profile_id,
             &name,
             color.as_deref(),
+            proxy_mode,
+            proxy_address,
         )?;
         let mut tabs = state.tabs.lock().unwrap();
         for tab in tabs.iter_mut() {
@@ -350,6 +361,138 @@ pub fn clear_download_history(app: AppHandle<tauri::Wry>) -> Result<(), String> 
 #[tauri::command]
 pub async fn sleep_inactive_tabs(app: AppHandle<tauri::Wry>) -> Result<usize, String> {
     sleep_inactive_tabs_sync(&app)
+}
+
+#[tauri::command]
+pub async fn set_monitor_panel_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || set_monitor_panel_open_sync(&app, open))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn toggle_monitor_panel(app: AppHandle<tauri::Wry>) -> Result<(), String> {
+    let next = !*app.state::<AppState>().monitor_panel_open.lock().unwrap();
+    tauri::async_runtime::spawn_blocking(move || set_monitor_panel_open_sync(&app, next))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn refresh_task_monitor(app: AppHandle<tauri::Wry>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || refresh_memory_metrics(&app))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn toggle_tab_pin(app: AppHandle<tauri::Wry>, tab_id: String) -> Result<bool, String> {
+    toggle_tab_pin_sync(&app, &tab_id)
+}
+
+#[tauri::command]
+pub async fn recover_tab(app: AppHandle<tauri::Wry>, tab_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || recover_tab_sync(app, &tab_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn adjust_active_tab_zoom(
+    app: AppHandle<tauri::Wry>,
+    delta: Option<f64>,
+) -> Result<f64, String> {
+    adjust_active_tab_zoom_sync(&app, delta)
+}
+
+#[tauri::command]
+pub async fn set_find_bar_open(app: AppHandle<tauri::Wry>, open: bool) -> Result<(), String> {
+    set_find_bar_open_sync(&app, open)
+}
+
+#[tauri::command]
+pub async fn find_in_active_tab(
+    app: AppHandle<tauri::Wry>,
+    query: String,
+    forward: bool,
+) -> Result<usize, String> {
+    find_in_active_tab_sync(&app, &query, forward)
+}
+
+#[tauri::command]
+pub fn save_current_workspace(
+    app: AppHandle<tauri::Wry>,
+    name: String,
+) -> Result<WorkspacePreset, String> {
+    let state = app.state::<AppState>();
+    let specs = {
+        let tabs = state.tabs.lock().unwrap();
+        specs_from_open_tabs(&tabs)
+    };
+    let created = create_workspace_preset(&state.workspaces_path, &name, specs)?;
+    emit_shell_state(&app);
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn delete_workspace(app: AppHandle<tauri::Wry>, workspace_id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    delete_workspace_preset(&state.workspaces_path, &workspace_id)?;
+    emit_shell_state(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn launch_workspace(
+    app: AppHandle<tauri::Wry>,
+    workspace_id: String,
+) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || launch_workspace_sync(app, &workspace_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn export_profile_zip(
+    app: AppHandle<tauri::Wry>,
+    profile_id: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || export_profile_archive_sync(&app, &profile_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn import_profile_zip(
+    app: AppHandle<tauri::Wry>,
+    source_path: Option<String>,
+) -> Result<Option<ProfileRecord>, String> {
+    let (profiles_dir, store_path, names_path) = {
+        let state = app.state::<AppState>();
+        (
+            state.profiles_dir.clone(),
+            state.profiles_store_path.clone(),
+            state.profile_names_path.clone(),
+        )
+    };
+    let imported = tauri::async_runtime::spawn_blocking(move || {
+        let zip_path = match source_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => match pick_open_zip_path() {
+                Some(p) => p,
+                None => return Ok(None),
+            },
+        };
+        import_profile_zip_to_dir(&profiles_dir, &store_path, &names_path, &zip_path).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if imported.is_some() {
+        emit_shell_state(&app);
+    }
+    Ok(imported)
 }
 
 #[tauri::command]
@@ -664,6 +807,9 @@ pub async fn show_app_menu(app: AppHandle<tauri::Wry>, x: f64, y: f64) -> Result
     )
     .build(&app)
     .map_err(|e| e.to_string())?;
+    let monitor_item = MenuItemBuilder::with_id("menu:task-monitor", "Task Monitor")
+        .build(&app)
+        .map_err(|e| e.to_string())?;
     let devtools_item = MenuItemBuilder::with_id("menu:devtools", "DevTools (F12)")
         .build(&app)
         .map_err(|e| e.to_string())?;
@@ -693,6 +839,7 @@ pub async fn show_app_menu(app: AppHandle<tauri::Wry>, x: f64, y: f64) -> Result
         .items(&[
             &profile_mgr_item,
             &download_mgr_item,
+            &monitor_item,
             &devtools_item,
             &about_item,
             &sep,
@@ -719,7 +866,7 @@ pub async fn show_tab_context_menu(
         .get_window("main")
         .ok_or_else(|| "Main window not found".to_string())?;
 
-    let (is_active, is_sleeping, tab_count, profiles) = {
+    let (is_active, is_sleeping, is_pinned, tab_count, profiles, is_en) = {
         let state = app.state::<AppState>();
         let active_id = state.active_tab_id.lock().unwrap().clone();
         let tabs = state.tabs.lock().unwrap();
@@ -727,18 +874,20 @@ pub async fn show_tab_context_menu(
             .iter()
             .find(|t| t.id == tab_id)
             .ok_or_else(|| "Tab tidak ditemukan".to_string())?;
-        let def = state.preferences.lock().unwrap().default_profile.clone();
+        let prefs = state.preferences.lock().unwrap().clone();
         let profs = sync_profiles_store(
             &state.profiles_dir,
             &state.profiles_store_path,
             &state.profile_names_path,
-            def.as_deref(),
+            prefs.default_profile.as_deref(),
         );
         (
             active_id.as_deref() == Some(tab_id.as_str()),
             tab.is_sleeping,
+            tab.is_pinned,
             tabs.len(),
             profs,
+            prefs.language == Language::En,
         )
     };
 
@@ -762,8 +911,19 @@ pub async fn show_tab_context_menu(
         .build()
         .map_err(|e| e.to_string())?;
 
+    let pin_label = if is_pinned {
+        if is_en { "Unpin Tab" } else { "Lepas Pin" }
+    } else if is_en {
+        "Pin / Keep Awake"
+    } else {
+        "Pin / Tetap Aktif"
+    };
+    let pin_item = MenuItemBuilder::with_id(format!("ctx-pin:{tab_id}"), pin_label)
+        .build(&app)
+        .map_err(|e| e.to_string())?;
+
     let sleep_item = MenuItemBuilder::with_id(format!("ctx-sleep:{tab_id}"), "Sleep Tab")
-        .enabled(!is_active && !is_sleeping)
+        .enabled(!is_active && !is_sleeping && !is_pinned)
         .build(&app)
         .map_err(|e| e.to_string())?;
 
@@ -781,6 +941,7 @@ pub async fn show_tab_context_menu(
         .items(&[
             &dup_same,
             &dup_submenu,
+            &pin_item,
             &sleep_item,
             &sep,
             &close_item,

@@ -47,7 +47,12 @@
       color: var(--text-main);
       user-select: none;
     }
-    body.modal-open {
+    body.find-open,
+    body.find-open .shell {
+      height: 116px;
+    }
+    body.modal-open,
+    body.crash-open {
       height: 100vh;
     }
     .shell {
@@ -159,12 +164,21 @@
       font-size: 12px;
       min-width: 0;
     }
-    .tab-sleep-icon {
+    .tab-sleep-icon,
+    .tab-pin-icon,
+    .tab-audio-icon,
+    .tab-crash-icon {
       font-size: 10px;
-      color: var(--accent-focus);
       flex-shrink: 0;
     }
-    .tab-sleep-icon[hidden] { display: none; }
+    .tab-sleep-icon { color: var(--accent-focus); }
+    .tab-pin-icon { color: #fbbf24; }
+    .tab-audio-icon { color: #10b981; }
+    .tab-crash-icon { color: var(--danger-text); }
+    .tab-sleep-icon[hidden],
+    .tab-pin-icon[hidden],
+    .tab-audio-icon[hidden],
+    .tab-crash-icon[hidden] { display: none; }
 
     .tab-close {
       width: 18px;
@@ -263,6 +277,57 @@
       outline: none;
       min-width: 0;
     }
+    .zoom-pill {
+      height: 22px;
+      padding: 0 7px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      background: var(--toolbar-bg);
+      color: var(--accent-focus);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .zoom-pill[hidden] { display: none; }
+    .find-bar {
+      height: 38px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--toolbar-bg);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .find-bar[hidden] { display: none; }
+    .find-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 28px;
+      width: 280px;
+      max-width: 60vw;
+      padding: 0 9px;
+      border-radius: 8px;
+      background: var(--omnibox-bg);
+      border: 1px solid var(--border-subtle);
+    }
+    .find-box:focus-within { border-color: var(--accent-focus); }
+    .find-box input {
+      flex: 1;
+      border: 0;
+      background: transparent;
+      color: var(--text-main);
+      font-size: 12px;
+      outline: none;
+      min-width: 0;
+    }
+    .find-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
 
     .toolbar-actions {
       display: flex;
@@ -344,6 +409,60 @@
       line-height: 1.45;
       color: var(--text-main);
       word-break: break-word;
+    }
+    .crash-screen {
+      position: fixed;
+      inset: 78px 0 0 0;
+      background: var(--frame-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 30;
+    }
+    .crash-screen[hidden] { display: none; }
+    .crash-card {
+      width: 100%;
+      max-width: 440px;
+      background: var(--modal-bg);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 20px 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .crash-title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--danger-text);
+    }
+    .crash-desc {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.45;
+      color: var(--text-muted);
+    }
+    .crash-url {
+      padding: 7px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--omnibox-bg);
+      font-size: 11.5px;
+      color: var(--text-main);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      user-select: text;
+    }
+    .crash-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 6px;
     }
 
     /* Modal Backdrop & Compact Profile Dialog (radius <= 12px) */
@@ -509,6 +628,7 @@
       <div class="omnibox">
         <i class="fa-solid fa-compass proto-icon proto-blank" id="protoIcon" aria-hidden="true"></i>
         <input id="urlInput" type="text" />
+        <button type="button" class="zoom-pill" id="zoomPill" hidden>100%</button>
         <button type="button" class="nav-btn" id="goBtn">
           <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
         </button>
@@ -527,6 +647,9 @@
           <i class="fa-solid fa-download" aria-hidden="true"></i>
           <span class="dl-active-dot" id="dlActiveDot" hidden></span>
         </button>
+        <button type="button" class="nav-btn" id="monitorBtn">
+          <i class="fa-solid fa-microchip" aria-hidden="true"></i>
+        </button>
         <button type="button" class="nav-btn" id="newEphemBtn">
           <i class="fa-solid fa-user-secret" aria-hidden="true"></i>
         </button>
@@ -538,6 +661,23 @@
           <i class="fa-solid fa-bars" aria-hidden="true"></i>
         </button>
       </div>
+    </div>
+
+    <div class="find-bar" id="findBar" hidden>
+      <div class="find-box">
+        <i class="fa-solid fa-magnifying-glass" style="font-size: 11px; color: var(--text-muted);" aria-hidden="true"></i>
+        <input id="findInput" type="text" autocomplete="off" />
+      </div>
+      <span class="find-count" id="findCountText">0 cocok</span>
+      <button type="button" class="nav-btn" id="findPrevBtn">
+        <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+      </button>
+      <button type="button" class="nav-btn" id="findNextBtn">
+        <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+      </button>
+      <button type="button" class="nav-btn" id="findCloseBtn">
+        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+      </button>
     </div>
   </div>
 
@@ -591,6 +731,21 @@
           <span id="checkUpdatesLabel">Cek Update</span>
         </button>
         <button type="button" class="btn btn-primary" id="installUpdateBtn" hidden>Pasang &amp; Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="crash-screen" id="crashScreen" hidden>
+    <div class="crash-card">
+      <div class="crash-title-row">
+        <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="crashTitleText">Proses Tab Terhenti</span>
+      </div>
+      <p class="crash-desc" id="crashDescText"></p>
+      <div class="crash-url" id="crashUrlText">-</div>
+      <div class="crash-actions">
+        <button type="button" class="btn btn-ghost" id="crashCloseTabBtn">Tutup Tab</button>
+        <button type="button" class="btn btn-primary" id="crashRecoverBtn">Pulihkan Tab</button>
       </div>
     </div>
   </div>

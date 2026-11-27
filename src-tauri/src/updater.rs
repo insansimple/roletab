@@ -191,7 +191,7 @@ mod tests {
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         let webviews = cap_json["webviews"].as_array().unwrap();
         let allowed: Vec<&str> = webviews.iter().filter_map(|v| v.as_str()).collect();
-        assert_eq!(allowed, vec!["ui-shell", "profile-panel", "download-panel"]);
+        assert_eq!(allowed, vec!["ui-shell", "profile-panel", "download-panel", "task-monitor"]);
         assert!(!allowed.contains(&"*"));
 
         let conf_json: serde_json::Value =
@@ -271,6 +271,12 @@ mod tests {
                     profile_color: rec.color.clone(),
                     is_ephemeral: false,
                     is_sleeping: false,
+                    is_pinned: false,
+                    is_playing_audio: false,
+                    browser_pid: None,
+                    memory_mb: None,
+                    zoom_factor: 1.0,
+                    crash_kind: None,
                     last_active_at: 1_000,
                     can_go_back: false,
                     can_go_forward: false,
@@ -290,6 +296,12 @@ mod tests {
                 profile_color: "#4b5563".into(),
                 is_ephemeral: true,
                 is_sleeping: false,
+                is_pinned: false,
+                is_playing_audio: false,
+                browser_pid: None,
+                memory_mb: None,
+                zoom_factor: 1.0,
+                crash_kind: None,
                 last_active_at: 1_000,
                 can_go_back: false,
                 can_go_forward: false,

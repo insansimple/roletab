@@ -3,27 +3,32 @@
 mod commands;
 mod downloads;
 mod profile;
+mod profile_transfer;
 mod runtime_check;
 mod state;
 #[cfg(test)]
 mod test_server;
 mod updater;
 mod webview;
+mod workspace;
 
 use tauri::webview::WebviewBuilder;
 use tauri::window::{Color, WindowBuilder};
 use tauri::{Emitter, Manager, WebviewUrl, WindowEvent};
 
 use commands::{
-    check_for_updates, clear_download_history, clear_profile_data, close_other_tabs, close_tab,
-    create_tab, create_tab_with_new_profile, delete_profile_dir, duplicate_tab, get_app_info,
+    adjust_active_tab_zoom, check_for_updates, clear_download_history, clear_profile_data,
+    close_other_tabs, close_tab, create_tab, create_tab_with_new_profile, delete_profile_dir,
+    delete_workspace, duplicate_tab, export_profile_zip, find_in_active_tab, get_app_info,
     get_profile_summaries, get_shell_state, go_back_active_tab, go_forward_active_tab,
-    go_home_active_tab, install_available_update, navigate_active_tab, open_active_devtools,
-    reload_active_tab, reorder_tab, set_default_profile, set_download_panel_open, set_preferences,
+    go_home_active_tab, import_profile_zip, install_available_update, launch_workspace,
+    navigate_active_tab, open_active_devtools, recover_tab, refresh_task_monitor,
+    reload_active_tab, reorder_tab, save_current_workspace, set_default_profile,
+    set_download_panel_open, set_find_bar_open, set_monitor_panel_open, set_preferences,
     set_profile_panel_open, set_shell_overlay_open, show_app_menu, show_download_in_folder,
     show_new_tab_menu, show_tab_context_menu, show_tab_overflow_menu, sleep_inactive_tabs,
-    sleep_tab, stop_active_tab, switch_tab, toggle_download_panel, toggle_profile_panel,
-    update_profile,
+    sleep_tab, stop_active_tab, switch_tab, toggle_download_panel, toggle_monitor_panel,
+    toggle_profile_panel, toggle_tab_pin, update_profile,
 };
 use state::{extract_cli_url, AppState, ThemeMode};
 
@@ -140,6 +145,10 @@ fn main() {
                     let _ = webview::switch_tab_sync(&app_menu, tab_id);
                     return;
                 }
+                if let Some(tab_id) = id.strip_prefix("ctx-pin:") {
+                    let _ = webview::toggle_tab_pin_sync(&app_menu, tab_id);
+                    return;
+                }
                 if let Some(tab_id) = id.strip_prefix("ctx-sleep:") {
                     let _ = webview::sleep_tab_sync(&app_menu, tab_id);
                     return;
@@ -172,6 +181,13 @@ fn main() {
                     let handle = app_menu.clone();
                     tauri::async_runtime::spawn_blocking(move || {
                         let _ = webview::set_download_panel_open_sync(&handle, true);
+                    });
+                    return;
+                }
+                if id == "menu:task-monitor" {
+                    let handle = app_menu.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = webview::set_monitor_panel_open_sync(&handle, true);
                     });
                     return;
                 }
@@ -254,10 +270,10 @@ fn main() {
                 let _ = webview::spawn_tab(app_init, profile_key, is_ephemeral, None);
             });
 
-            // Lightweight background scheduler: checks every 30s and sleeps hidden tabs idle >= 15 minutes.
+            // Lightweight background scheduler: refreshes memory metrics and checks smart idle sleep every 15s.
             let app_sleep = app.handle().clone();
             std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(30));
+                std::thread::sleep(std::time::Duration::from_secs(15));
                 webview::run_idle_sleep_check(&app_sleep);
             });
 
@@ -286,9 +302,22 @@ fn main() {
             toggle_profile_panel,
             set_download_panel_open,
             toggle_download_panel,
+            set_monitor_panel_open,
+            toggle_monitor_panel,
+            refresh_task_monitor,
             show_download_in_folder,
             clear_download_history,
             sleep_inactive_tabs,
+            toggle_tab_pin,
+            recover_tab,
+            adjust_active_tab_zoom,
+            set_find_bar_open,
+            find_in_active_tab,
+            save_current_workspace,
+            delete_workspace,
+            launch_workspace,
+            export_profile_zip,
+            import_profile_zip,
             set_preferences,
             create_tab,
             create_tab_with_new_profile,

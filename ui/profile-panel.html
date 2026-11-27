@@ -67,6 +67,7 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
+      white-space: nowrap;
     }
     .side-title i { color: var(--accent-focus); }
     .side-header-actions {
@@ -130,6 +131,58 @@
       text-overflow: ellipsis;
       white-space: nowrap;
       flex-shrink: 0;
+    }
+    .panel-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--panel-bg);
+      flex-shrink: 0;
+    }
+    .panel-tab-btn {
+      flex: 1;
+      height: 28px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .panel-tab-btn.active {
+      background: var(--surface-bg);
+      color: var(--text-main);
+      border-color: var(--accent-focus);
+    }
+    .proxy-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .proxy-select {
+      height: 32px;
+      padding: 0 8px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--input-bg);
+      color: var(--text-main);
+      font-size: 11.5px;
+    }
+    .ws-save-form {
+      display: flex;
+      gap: 6px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--surface-bg);
+      flex-shrink: 0;
+    }
+    .ws-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
     }
 
     .notice-bar {
@@ -220,6 +273,11 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+    }
+    .side-body[hidden],
+    .ws-save-form[hidden],
+    .side-header-actions button[hidden] {
+      display: none;
     }
 
     .profile-item {
@@ -393,6 +451,10 @@
         <span id="panelTitle">Kelola Profil</span>
       </h1>
       <div class="side-header-actions">
+        <button type="button" class="btn btn-ghost" id="importProfileBtn">
+          <i class="fa-solid fa-file-import" aria-hidden="true"></i>
+          <span id="importProfileLabel">Import</span>
+        </button>
         <button type="button" class="btn btn-primary" id="toggleCreateBtn">
           <i class="fa-solid fa-plus" aria-hidden="true"></i>
           <span id="toggleCreateLabel">Buat Profil</span>
@@ -401,6 +463,11 @@
           <i class="fa-solid fa-xmark" aria-hidden="true"></i>
         </button>
       </div>
+    </div>
+
+    <div class="panel-tabs">
+      <button type="button" class="panel-tab-btn active" id="tabProfilesViewBtn">Profil</button>
+      <button type="button" class="panel-tab-btn" id="tabWorkspacesViewBtn">Workspace</button>
     </div>
 
     <div class="side-subbar" id="profilesDirLabel"></div>
@@ -418,7 +485,13 @@
       </div>
     </form>
 
+    <form class="ws-save-form" id="wsSaveForm" hidden novalidate>
+      <input class="create-input" id="wsNameInput" type="text" maxlength="40" autocomplete="off" />
+      <button type="submit" class="btn btn-primary" id="wsSaveSubmitBtn">Simpan Tab</button>
+    </form>
+
     <div class="side-body" id="profileList"></div>
+    <div class="side-body" id="workspaceList" hidden></div>
   </div>
 
   <div class="action-menu" id="profileActionMenu" hidden></div>

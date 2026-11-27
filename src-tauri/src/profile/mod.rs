@@ -20,6 +20,49 @@ pub const PROFILE_COLOR_PRESETS: &[&str] = &[
 
 pub const EPHEMERAL_BADGE_COLOR: &str = "#4b5563";
 
+/// Per-profile network proxy protocol (`direct` leaves OS/default network direct).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    #[default]
+    Direct,
+    Http,
+    Socks5,
+}
+
+/// Validates and converts `(ProxyMode, raw_addr)` into an explicit proxy `url::Url` for WebView2.
+pub fn build_profile_proxy_url(
+    mode: &ProxyMode,
+    raw_addr: Option<&str>,
+) -> Result<Option<url::Url>, String> {
+    if *mode == ProxyMode::Direct {
+        return Ok(None);
+    }
+    let trimmed = raw_addr.unwrap_or("").trim();
+    if trimmed.is_empty() {
+        return Err("Alamat proxy wajib diisi (contoh: 127.0.0.1:8080)".to_string());
+    }
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .or_else(|| trimmed.strip_prefix("socks5://"))
+        .or_else(|| trimmed.strip_prefix("socks5h://"))
+        .unwrap_or(trimmed);
+
+    let scheme = match mode {
+        ProxyMode::Direct => return Ok(None),
+        ProxyMode::Http => "http",
+        ProxyMode::Socks5 => "socks5",
+    };
+    let candidate = format!("{scheme}://{without_scheme}");
+    let parsed = url::Url::parse(&candidate)
+        .map_err(|_| "Format alamat proxy tidak valid (gunakan host:port)".to_string())?;
+    if parsed.host_str().is_none() || parsed.port().is_none() {
+        return Err("Alamat proxy harus menyertakan host dan port (contoh: 127.0.0.1:8080)".to_string());
+    }
+    Ok(Some(parsed))
+}
+
 /// Persistent metadata record stored in `profiles.json` (`%APPDATA%\RoleTab\`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +76,10 @@ pub struct ProfileRecord {
     pub last_used_at: u64,
     #[serde(default)]
     pub created_at: u64,
+    #[serde(default)]
+    pub proxy_mode: ProxyMode,
+    #[serde(default)]
+    pub proxy_address: Option<String>,
 }
 
 /// Real disk and runtime summary for a persistent profile shown in Profile Manager.
@@ -48,6 +95,8 @@ pub struct ProfileSummary {
     pub open_tab_count: usize,
     pub is_default: bool,
     pub last_used_at: u64,
+    pub proxy_mode: ProxyMode,
+    pub proxy_address: Option<String>,
 }
 
 fn unix_now_secs() -> u64 {
@@ -173,6 +222,8 @@ pub fn sync_profiles_store(
                 is_default,
                 last_used_at: now,
                 created_at: now,
+                proxy_mode: ProxyMode::Direct,
+                proxy_address: None,
             });
             changed = true;
         }
@@ -232,6 +283,8 @@ pub fn create_profile_record(
         is_default: false,
         last_used_at: now,
         created_at: now,
+        proxy_mode: ProxyMode::Direct,
+        proxy_address: None,
     };
 
     let dir = profile_data_dir(profiles_dir, &record.id);
@@ -242,7 +295,7 @@ pub fn create_profile_record(
     Ok(record)
 }
 
-/// Updates a profile's display name and badge color in `profiles.json` without touching its locked OS folder.
+/// Updates a profile's display name, badge color, and optional per-profile proxy settings in `profiles.json`.
 pub fn update_profile_record(
     profiles_dir: &Path,
     profiles_store_path: &Path,
@@ -250,9 +303,15 @@ pub fn update_profile_record(
     profile_id: &str,
     raw_name: &str,
     color: Option<&str>,
+    proxy_mode: Option<ProxyMode>,
+    proxy_address: Option<String>,
 ) -> Result<ProfileRecord, String> {
     let mut records = sync_profiles_store(profiles_dir, profiles_store_path, legacy_names_path, None);
     let name = validate_profile_name(raw_name, &records, Some(profile_id))?;
+
+    if let Some(ref mode) = proxy_mode {
+        build_profile_proxy_url(mode, proxy_address.as_deref())?;
+    }
 
     let target = records
         .iter_mut()
@@ -260,6 +319,14 @@ pub fn update_profile_record(
         .ok_or_else(|| "Profil tidak ditemukan".to_string())?;
     target.name = name.clone();
     target.color = normalize_profile_color(color, &name);
+    if let Some(mode) = proxy_mode {
+        target.proxy_mode = mode.clone();
+        target.proxy_address = if mode == ProxyMode::Direct {
+            None
+        } else {
+            proxy_address.map(|a| a.trim().to_string()).filter(|a| !a.is_empty())
+        };
+    }
     let updated = target.clone();
 
     records.sort_by_key(|r| r.name.to_ascii_lowercase());
@@ -404,6 +471,8 @@ pub fn build_profile_summaries(
                 open_tab_count,
                 is_default: rec.is_default,
                 last_used_at: rec.last_used_at,
+                proxy_mode: rec.proxy_mode,
+                proxy_address: rec.proxy_address,
             }
         })
         .collect()
@@ -507,7 +576,7 @@ mod tests {
         )
         .is_err());
 
-        // Rename & recolor keeps the exact same UUID folder path
+        // Rename, recolor & configure HTTP proxy keeping the exact same UUID folder path
         let updated = update_profile_record(
             &profiles_dir,
             &store_path,
@@ -515,11 +584,16 @@ mod tests {
             &created.id,
             "Kasir Malam",
             Some("#6d28d9"),
+            Some(ProxyMode::Http),
+            Some("127.0.0.1:8080".into()),
         )
         .unwrap();
         assert_eq!(updated.id, created.id);
         assert_eq!(updated.name, "Kasir Malam");
         assert_eq!(updated.color, "#6d28d9");
+        assert_eq!(updated.proxy_mode, ProxyMode::Http);
+        assert_eq!(updated.proxy_address.as_deref(), Some("127.0.0.1:8080"));
+        assert!(build_profile_proxy_url(&ProxyMode::Http, Some("bad-no-port")).is_err());
         assert!(profile_data_dir(&profiles_dir, &created.id).exists());
 
         let _ = std::fs::remove_dir_all(&base);
@@ -535,6 +609,8 @@ mod tests {
                 is_default: false,
                 last_used_at: 0,
                 created_at: 0,
+                proxy_mode: ProxyMode::Direct,
+                proxy_address: None,
             },
             ProfileRecord {
                 id: "id2".into(),
@@ -543,6 +619,8 @@ mod tests {
                 is_default: false,
                 last_used_at: 0,
                 created_at: 0,
+                proxy_mode: ProxyMode::Direct,
+                proxy_address: None,
             },
         ];
         assert!(validate_profile_name("   ", &existing, None).is_err());
@@ -587,6 +665,12 @@ mod tests {
             profile_color: "#b91c1c".into(),
             is_ephemeral: false,
             is_sleeping: false,
+            is_pinned: false,
+            is_playing_audio: false,
+            browser_pid: None,
+            memory_mb: None,
+            zoom_factor: 1.0,
+            crash_kind: None,
             last_active_at: 0,
             can_go_back: false,
             can_go_forward: false,

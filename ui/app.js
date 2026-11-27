@@ -12,9 +12,14 @@
     tabs: [],
     activeTabId: null,
     activeAwakeCount: 0,
+    totalMemoryMb: 0,
     downloads: [],
+    workspaces: [],
     profilePanelOpen: false,
-    downloadPanelOpen: false
+    downloadPanelOpen: false,
+    monitorPanelOpen: false,
+    findBarOpen: false,
+    findQuery: ''
   };
   let selectedModalColor = '#1d4ed8';
   let dragFromIndex = null;
@@ -59,12 +64,18 @@
     setAriaTitle('goBtn', 'goUrl');
     setAriaTitle('newEphemBtn', 'newEphemeralTab');
     setAriaTitle('downloadsBtn', 'downloadsTitle');
+    setAriaTitle('monitorBtn', 'taskMonitorTitle');
     setAriaTitle('awakeWarnBtn', 'awakeWarnTooltip');
     setAriaTitle('updateReadyBtn', 'updateReadyTooltip');
     setAriaTitle('themeBtn', 'themeTooltip');
     setAriaTitle('menuBtn', 'menuLabel', 'menuTooltip');
     setAriaTitle('closeProfileModalBtn', 'closeModal');
     setAriaTitle('closeAboutModalBtn', 'closeModal');
+    setAriaTitle('zoomPill', 'zoomResetTooltip');
+    setAriaTitle('findPrevBtn', 'findPrev');
+    setAriaTitle('findNextBtn', 'findNext');
+    setAriaTitle('findCloseBtn', 'closeModal');
+    document.getElementById('findInput').placeholder = t('findPlaceholder');
 
     document.getElementById('newProfileModalTitle').textContent = t('newProfileTitle');
     document.getElementById('newProfileInputLabel').textContent = t('newProfileLabel');
@@ -80,6 +91,8 @@
     document.getElementById('checkUpdatesLabel').textContent = t('checkUpdatesBtn');
     document.getElementById('installUpdateBtn').textContent = t('installUpdateBtn');
     document.getElementById('updateReadyLabel').textContent = t('updateBtnLabel');
+    document.getElementById('crashCloseTabBtn').textContent = t('closeTab');
+    document.getElementById('crashRecoverBtn').textContent = t('recoverTabBtn');
 
     const langBtn = document.getElementById('langBtn');
     langBtn.textContent = t('langLabel');
@@ -261,6 +274,21 @@
     const badge = document.createElement('span');
     badge.className = `tab-role ${style.cls}`;
 
+    const pinIcon = document.createElement('i');
+    pinIcon.className = 'fa-solid fa-thumbtack tab-pin-icon';
+    pinIcon.setAttribute('aria-hidden', 'true');
+    pinIcon.hidden = true;
+
+    const audioIcon = document.createElement('i');
+    audioIcon.className = 'fa-solid fa-volume-high tab-audio-icon';
+    audioIcon.setAttribute('aria-hidden', 'true');
+    audioIcon.hidden = true;
+
+    const crashIcon = document.createElement('i');
+    crashIcon.className = 'fa-solid fa-triangle-exclamation tab-crash-icon';
+    crashIcon.setAttribute('aria-hidden', 'true');
+    crashIcon.hidden = true;
+
     const sleepIcon = document.createElement('i');
     sleepIcon.className = 'fa-solid fa-moon tab-sleep-icon';
     sleepIcon.setAttribute('aria-hidden', 'true');
@@ -278,7 +306,7 @@
     closeIcon.setAttribute('aria-hidden', 'true');
     close.appendChild(closeIcon);
 
-    el.append(leadIcon, title, badge, sleepIcon, close);
+    el.append(leadIcon, title, badge, pinIcon, audioIcon, crashIcon, sleepIcon, close);
     return el;
   }
 
@@ -299,8 +327,26 @@
     badge.title = style.label;
 
     const title = el.querySelector('.tab-title');
-    title.textContent = tab.title && tab.title !== 'about:blank' ? tab.title : t('tabDefault');
-    title.title = tab.title || tab.url;
+    const titleLabel = tab.title && tab.title !== 'about:blank' ? tab.title : t('tabDefault');
+    title.textContent = titleLabel;
+    const tipParts = [titleLabel];
+    if (tab.browserPid) tipParts.push(`PID ${tab.browserPid}`);
+    if (typeof tab.memoryMb === 'number') tipParts.push(`${tab.memoryMb} MB`);
+    if (tab.isPinned) tipParts.push(t('statusPinned'));
+    if (tab.isPlayingAudio) tipParts.push('Audio');
+    title.title = tipParts.join(' | ');
+
+    const pinIcon = el.querySelector('.tab-pin-icon');
+    pinIcon.hidden = !tab.isPinned;
+    pinIcon.title = t('statusPinned');
+
+    const audioIcon = el.querySelector('.tab-audio-icon');
+    audioIcon.hidden = !tab.isPlayingAudio;
+    audioIcon.title = 'Audio';
+
+    const crashIcon = el.querySelector('.tab-crash-icon');
+    crashIcon.hidden = !tab.crashKind;
+    crashIcon.title = t('statusCrashed');
 
     const sleepIcon = el.querySelector('.tab-sleep-icon');
     sleepIcon.hidden = !tab.isSleeping;
@@ -323,6 +369,10 @@
     const dlBtn = document.getElementById('downloadsBtn');
     if (dlBtn) {
       dlBtn.classList.toggle('active', Boolean(currentState.downloadPanelOpen));
+    }
+    const monBtn = document.getElementById('monitorBtn');
+    if (monBtn) {
+      monBtn.classList.toggle('active', Boolean(currentState.monitorPanelOpen));
     }
     const dlDot = document.getElementById('dlActiveDot');
     if (dlDot) {
@@ -390,6 +440,39 @@
         reloadBtn.setAttribute('aria-label', t('reload'));
       }
     }
+
+    const crashScreen = document.getElementById('crashScreen');
+    if (activeTab && activeTab.crashKind) {
+      document.body.classList.add('crash-open');
+      crashScreen.hidden = false;
+      const titleEl = document.getElementById('crashTitleText');
+      const descEl = document.getElementById('crashDescText');
+      if (activeTab.crashKind === 'browserProcessExited') {
+        titleEl.textContent = t('crashTitleBrowser');
+        descEl.textContent = t('crashDescBrowser');
+      } else if (activeTab.crashKind === 'renderProcessUnresponsive') {
+        titleEl.textContent = t('crashTitleUnresponsive');
+        descEl.textContent = t('crashDescUnresponsive');
+      } else {
+        titleEl.textContent = t('crashTitleRender');
+        descEl.textContent = t('crashDescRender');
+      }
+      document.getElementById('crashUrlText').textContent = `${activeTab.profileKey} | ${activeTab.url}`;
+    } else {
+      document.body.classList.remove('crash-open');
+      crashScreen.hidden = true;
+    }
+
+    const zoom = activeTab && typeof activeTab.zoomFactor === 'number' ? activeTab.zoomFactor : 1.0;
+    const zoomPill = document.getElementById('zoomPill');
+    if (zoomPill) {
+      zoomPill.hidden = Math.abs(zoom - 1.0) < 0.01;
+      zoomPill.textContent = `${Math.round(zoom * 100)}%`;
+    }
+
+    const findOpen = Boolean(currentState.findBarOpen);
+    document.body.classList.toggle('find-open', findOpen);
+    document.getElementById('findBar').hidden = !findOpen;
   }
 
   async function openTab(profileKey, isEphemeral) {
@@ -457,8 +540,45 @@
     await invoke('toggle_download_panel');
   }
 
+  async function toggleMonitorPanel() {
+    await invoke('toggle_monitor_panel');
+  }
+
+  async function recoverActiveTab() {
+    if (currentState.activeTabId) {
+      await invoke('recover_tab', { tabId: currentState.activeTabId });
+    }
+  }
+
   async function sleepInactiveTabs() {
     await invoke('sleep_inactive_tabs');
+  }
+
+  async function adjustZoom(delta) {
+    await invoke('adjust_active_tab_zoom', { delta });
+  }
+
+  async function runFind(forward = true) {
+    const inp = document.getElementById('findInput');
+    const q = inp.value;
+    const count = await invoke('find_in_active_tab', { query: q, forward });
+    const countEl = document.getElementById('findCountText');
+    countEl.textContent = count > 0 ? `${count} ${t('findMatchSuffix')}` : t('findNoMatch');
+  }
+
+  async function openFindBar() {
+    await invoke('set_find_bar_open', { open: true });
+    if (currentWebview && !document.hasFocus()) {
+      await currentWebview.setFocus().catch(() => {});
+    }
+    const inp = document.getElementById('findInput');
+    inp.focus();
+    inp.select();
+  }
+
+  async function closeFindBar() {
+    document.getElementById('findCountText').textContent = t('findNoMatch');
+    await invoke('set_find_bar_open', { open: false });
   }
 
   function renderModalColorRow() {
@@ -655,6 +775,10 @@
     if (action === 'close_tab' && currentState.activeTabId) return closeTab(currentState.activeTabId);
     if (action === 'reload_tab') return invoke('reload_active_tab');
     if (action === 'toggle_devtools') return openDevtools();
+    if (action === 'find_in_page') return openFindBar();
+    if (action === 'zoom_in') return adjustZoom(0.1);
+    if (action === 'zoom_out') return adjustZoom(-0.1);
+    if (action === 'zoom_reset') return adjustZoom(null);
     if (action === 'focus_address_bar') {
       if (currentWebview && !document.hasFocus()) {
         await currentWebview.setFocus();
@@ -675,6 +799,25 @@
   function bindToolbarEvents() {
     document.getElementById('profileMgrBtn').addEventListener('click', toggleProfilePanel);
     document.getElementById('downloadsBtn').addEventListener('click', toggleDownloadPanel);
+    document.getElementById('monitorBtn').addEventListener('click', toggleMonitorPanel);
+    document.getElementById('zoomPill').addEventListener('click', () => adjustZoom(null));
+    document.getElementById('findInput').addEventListener('input', () => runFind(true));
+    document.getElementById('findInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runFind(!e.shiftKey);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeFindBar();
+      }
+    });
+    document.getElementById('findPrevBtn').addEventListener('click', () => runFind(false));
+    document.getElementById('findNextBtn').addEventListener('click', () => runFind(true));
+    document.getElementById('findCloseBtn').addEventListener('click', closeFindBar);
+    document.getElementById('crashRecoverBtn').addEventListener('click', recoverActiveTab);
+    document.getElementById('crashCloseTabBtn').addEventListener('click', () => {
+      if (currentState.activeTabId) closeTab(currentState.activeTabId);
+    });
     document.getElementById('awakeWarnBtn').addEventListener('click', sleepInactiveTabs);
     document.getElementById('updateReadyBtn').addEventListener('click', openAboutModal);
     document.getElementById('newTabBtn').addEventListener('click', openNewTabMenu);
@@ -746,6 +889,11 @@
         closeAboutModal();
         return;
       }
+      if (e.key === 'Escape' && currentState.findBarOpen) {
+        e.preventDefault();
+        closeFindBar();
+        return;
+      }
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault(); handleShortcut('new_ephemeral_tab');
       } else if (e.ctrlKey && e.shiftKey && e.key === 'Tab') {
@@ -758,6 +906,14 @@
         e.preventDefault(); handleShortcut('next_tab');
       } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'l') {
         e.preventDefault(); handleShortcut('focus_address_bar');
+      } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault(); handleShortcut('find_in_page');
+      } else if (e.ctrlKey && (e.key === '=' || e.key === '+')) {
+        e.preventDefault(); handleShortcut('zoom_in');
+      } else if (e.ctrlKey && !e.shiftKey && e.key === '-') {
+        e.preventDefault(); handleShortcut('zoom_out');
+      } else if (e.ctrlKey && !e.shiftKey && e.key === '0') {
+        e.preventDefault(); handleShortcut('zoom_reset');
       } else if ((e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'r') || e.key === 'F5') {
         e.preventDefault(); handleShortcut('reload_tab');
       } else if (e.key === 'F12') {
