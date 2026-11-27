@@ -22,7 +22,8 @@
     findQuery: ''
   };
   let selectedModalColor = '#1d4ed8';
-  let dragFromIndex = null;
+  let activeDrag = null;
+  let suppressTabClick = false;
   let lastRenderedIds = '';
   let cachedAppInfo = null;
   let lastUpdateCheck = null;
@@ -207,15 +208,108 @@
     }
   }
 
+  function clearTabDropIndicators() {
+    document.querySelectorAll('#tabs .tab').forEach((node) => {
+      node.classList.remove('drag-over', 'drag-over-right');
+    });
+  }
+
+  function startTabDrag(el, startEvent) {
+    if (startEvent.button !== 0) return;
+    if (startEvent.target?.closest?.('.tab-close')) return;
+
+    const tabsContainer = document.getElementById('tabs');
+    const tabEls = Array.from(tabsContainer.querySelectorAll('.tab'));
+    const fromIndex = Number(el.dataset.tabIndex);
+    if (!Number.isInteger(fromIndex) || tabEls.length < 2) return;
+
+    const restingMids = tabEls.map((node, idx) => {
+      const rect = node.getBoundingClientRect();
+      return { idx, mid: rect.left + rect.width / 2 };
+    });
+
+    const startX = startEvent.clientX;
+    let dragging = false;
+    let targetIndex = fromIndex;
+    activeDrag = { fromIndex, tabId: el.dataset.tabId, dragging: false };
+
+    const updateTarget = (clientX) => {
+      let insertSlot = 0;
+      for (const item of restingMids) {
+        if (item.idx === fromIndex) continue;
+        if (item.mid < clientX) insertSlot += 1;
+      }
+      targetIndex = insertSlot;
+      clearTabDropIndicators();
+      if (targetIndex < fromIndex && tabEls[targetIndex]) {
+        tabEls[targetIndex].classList.add('drag-over');
+      } else if (targetIndex > fromIndex && tabEls[targetIndex]) {
+        tabEls[targetIndex].classList.add('drag-over-right');
+      }
+    };
+
+    const onPointerMove = (moveEvent) => {
+      const dx = moveEvent.clientX - startX;
+      if (!dragging) {
+        if (Math.abs(dx) <= 6) return;
+        dragging = true;
+        if (activeDrag) activeDrag.dragging = true;
+        el.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+        try {
+          el.setPointerCapture?.(startEvent.pointerId);
+        } catch {}
+      }
+      el.style.transform = `translateX(${dx}px)`;
+      updateTarget(moveEvent.clientX);
+    };
+
+    const finishDrag = async (commit) => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      activeDrag = null;
+      document.body.style.userSelect = '';
+      el.classList.remove('dragging');
+      el.style.transform = '';
+      clearTabDropIndicators();
+      try {
+        if (el.hasPointerCapture?.(startEvent.pointerId)) {
+          el.releasePointerCapture(startEvent.pointerId);
+        }
+      } catch {}
+
+      if (dragging) {
+        suppressTabClick = true;
+        setTimeout(() => { suppressTabClick = false; }, 0);
+        if (commit && targetIndex !== fromIndex) {
+          await invoke('reorder_tab', { fromIndex, toIndex: targetIndex });
+        }
+      }
+    };
+
+    const onPointerUp = () => { void finishDrag(true); };
+    const onPointerCancel = () => { void finishDrag(false); };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+  }
+
   function buildTabElement(tab, index) {
     const style = roleStyle(tab);
     const el = document.createElement('div');
     el.dataset.tabId = tab.id;
     el.dataset.tabIndex = String(index);
     el.setAttribute('role', 'tab');
-    el.draggable = true;
 
-    el.addEventListener('click', () => switchTab(el.dataset.tabId));
+    el.addEventListener('click', () => {
+      if (suppressTabClick) {
+        suppressTabClick = false;
+        return;
+      }
+      switchTab(el.dataset.tabId);
+    });
     el.addEventListener('contextmenu', async (e) => {
       e.preventDefault();
       await invoke('show_tab_context_menu', {
@@ -245,25 +339,7 @@
         closeTab(el.dataset.tabId);
       }
     });
-    el.addEventListener('dragstart', () => {
-      dragFromIndex = Number(el.dataset.tabIndex);
-    });
-    el.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      el.classList.add('drag-over');
-    });
-    el.addEventListener('dragleave', () => {
-      el.classList.remove('drag-over');
-    });
-    el.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      el.classList.remove('drag-over');
-      const dropIndex = Number(el.dataset.tabIndex);
-      if (dragFromIndex !== null && dragFromIndex !== dropIndex) {
-        await invoke('reorder_tab', { fromIndex: dragFromIndex, toIndex: dropIndex });
-      }
-      dragFromIndex = null;
-    });
+    el.addEventListener('pointerdown', (e) => startTabDrag(el, e));
 
     const leadIcon = createFallbackIcon(style);
     leadIcon.dataset.favUrl = '';
@@ -313,8 +389,9 @@
   function updateTabElement(el, tab, index) {
     const style = roleStyle(tab);
     const isActive = tab.id === currentState.activeTabId;
+    const isDragging = Boolean(activeDrag?.dragging && activeDrag.tabId === tab.id);
     el.dataset.tabIndex = String(index);
-    el.className = 'tab' + (isActive ? ' active' : '') + (tab.isSleeping ? ' sleeping' : '');
+    el.className = 'tab' + (isActive ? ' active' : '') + (tab.isSleeping ? ' sleeping' : '') + (isDragging ? ' dragging' : '');
     el.setAttribute('aria-selected', String(isActive));
     el.tabIndex = isActive ? 0 : -1;
 

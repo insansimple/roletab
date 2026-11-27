@@ -110,6 +110,9 @@
       white-space: nowrap;
       flex-shrink: 0;
       border-left: 2px solid transparent;
+      border-right: 2px solid transparent;
+      touch-action: none;
+      user-select: none;
     }
     .tab:hover {
       background: var(--tab-hover);
@@ -120,7 +123,14 @@
       color: var(--text-main);
     }
     .tab.sleeping { opacity: 0.65; }
+    .tab.dragging {
+      position: relative;
+      z-index: 5;
+      cursor: grabbing;
+      opacity: 0.92;
+    }
     .tab.drag-over { border-left-color: var(--accent-focus); }
+    .tab.drag-over-right { border-right-color: var(--accent-focus); }
 
     .tab-favicon {
       width: 14px;
