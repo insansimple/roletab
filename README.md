@@ -6,9 +6,7 @@
 
 **Satu jendela browser, banyak identitas role secara bersamaan tanpa bentrok sesi.**
 
-[![Download Installer](https://img.shields.io/badge/Download_Windows_Installer-v1.1.0-1a73e8?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/insansimple/roletab/releases/latest)
 [![Halaman Releases](https://img.shields.io/github/v/release/insansimple/roletab?style=for-the-badge&label=Releases&color=0f766e)](https://github.com/insansimple/roletab/releases)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/insansimple/roletab/.github/workflows/release-windows.yml?style=for-the-badge&label=Windows_Build)](https://github.com/insansimple/roletab/actions)
 
 </div>
 
